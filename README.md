@@ -11,14 +11,22 @@
 
 <p align="center">
   <strong>🏆 State-of-the-Art Performance on SWE-bench Verified: 80%</strong><br>
-  <strong>🤖 QuantaAlpha Team's Homepage: <a href="https://quantaalpha.github.io">https://quantaalpha.github.io</a></strong><br>
 </p>
 
 <p align="center">
   <a href="https://arxiv.org/abs/2508.02085"><img src="https://img.shields.io/badge/Paper-arXiv-red.svg" alt="Paper"></a>
-  <a href="https://www.swebench.com"><img src="https://img.shields.io/badge/SWE--bench-Verified%20%231-gold.svg" alt="SWE-bench"></a>
+  <a href="https://quantaalpha.github.io/"><img src="https://img.shields.io/badge/Homepage-QuantaAlpha-00A98F.svg?style=flat-square&logo=opensourceinitiative&logoColor=white" /></a>
+  <a href="https://www.swebench.com"><img src="https://img.shields.io/badge/SWE--bench-Verified%20-gold.svg" alt="SWE-bench"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License"></a>
 </p>
+
+## 📰 News
+
+- **2025.08.28** 🎉 We open-sourced [**RepoMaster**](https://github.com/QuantaAlpha/RepoMaster) — an AI agent that leverages GitHub repos to solve complex real-world tasks.
+- **2025.08.26** 🎉 We open-sourced [**GitTaskBench**](https://github.com/QuantaAlpha/GitTaskBench) — a repo-level benchmark & tooling suite for real-world tasks.
+- **2025.08.10** 🎉 We open-sourced [**SE-Agent**](https://github.com/JARVIS-Xs/SE-Agent) — a self-evolution trajectory framework for multi-step reasoning.
+
+> 🔗 **Ecosystem**: [RepoMaster](https://github.com/QuantaAlpha/RepoMaster) · [GitTaskBench](https://github.com/QuantaAlpha/GitTaskBench) · [SE-Agent](https://github.com/JARVIS-Xs/SE-Agent) · [Team Homepage](https://quantaalpha.github.io)
 
 ---
 
