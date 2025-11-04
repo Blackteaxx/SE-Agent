@@ -4,24 +4,25 @@ SE框架多迭代执行脚本
 支持策略驱动的多次SWE-agent迭代执行
 """
 
-import sys
-import json
-import yaml
-import subprocess
-import tempfile
-import os
 import argparse
-from pathlib import Path
+import json
+import os
+import subprocess
+import sys
+import tempfile
 from datetime import datetime
+from pathlib import Path
+
+import yaml
 
 # 添加SE目录到Python路径
 sys.path.insert(0, str(Path(__file__).parent))
 
 # 导入SE日志系统和轨迹处理器
-from core.utils.se_logger import setup_se_logging, get_se_logger
-from core.utils.trajectory_processor import TrajectoryProcessor
-from core.utils.traj_pool_manager import TrajPoolManager
+from core.utils.se_logger import get_se_logger, setup_se_logging
 from core.utils.traj_extractor import TrajExtractor
+from core.utils.traj_pool_manager import TrajPoolManager
+from core.utils.trajectory_processor import TrajectoryProcessor
 
 # 导入operator系统
 from operators import create_operator, list_operators

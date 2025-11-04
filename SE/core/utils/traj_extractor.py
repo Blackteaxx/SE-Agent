@@ -5,9 +5,10 @@
 """
 
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
+
+from core.utils.instance_data_manager import InstanceData, get_instance_data_manager
 from core.utils.se_logger import get_se_logger
-from core.utils.instance_data_manager import get_instance_data_manager, InstanceData
 
 
 class TrajExtractor:

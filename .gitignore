@@ -118,3 +118,4 @@ SE/trajectories/*
 
 # 数据文件
 SE/instances/EffiBench-X/dataset/*
+SE_swe/

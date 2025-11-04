@@ -120,8 +120,8 @@ agent:
       --- DEMONSTRATION ---
       {{demonstration}}
       --- END OF DEMONSTRATION ---
-    demonstrations:
-      - /home/uaih3k9x/630_swe/trajectories/traj_claude_tools_default.traj
+    # demonstrations:
+    #   - /home/uaih3k9x/630_swe/trajectories/traj_claude_tools_default.traj
     put_demos_in_history: true
   tools:
     execution_timeout: 300

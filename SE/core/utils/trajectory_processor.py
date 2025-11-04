@@ -113,11 +113,51 @@ class TrajectoryProcessor:
             with open(traj_file, 'r', encoding='utf-8') as f:
                 traj_data = json.load(f)
             
-            # 提取并简化history
+            # 提取并简化 history
             history = traj_data.get('history', [])
+
+            # perf 轨迹：若历史项包含 message_type，则视为 perfagent 轨迹。
+            # 仅保留 role 与 content，不做截断或字段改写。
+            is_perf_traj = any(isinstance(it, dict) and ('message_type' in it) for it in history)
+
             simplified_history = []
             total_tokens = 0
             original_tokens = 0  # 原始token数统计
+
+            # perf 轨迹处理
+            if is_perf_traj:
+                for item in history:
+                    if not isinstance(item, dict) or 'role' not in item:
+                        continue
+
+                    simplified_item = {'role': item['role']}
+                    if 'content' in item:
+                        content_val = item['content']
+                        simplified_item['content'] = content_val
+                        # perf 模式不压缩：原始与输出的 token 相同
+                        content_str = str(content_val) if content_val is not None else ""
+                        tokens = self._count_tokens(content_str)
+                        original_tokens += tokens
+                        total_tokens += tokens
+
+                    if len(simplified_item) > 1:
+                        simplified_history.append(simplified_item)
+
+                # 创建.tra文件内容（仅 role/content）
+                tra_data = {
+                    'Trajectory': simplified_history
+                }
+
+                with open(tra_file, 'w', encoding='utf-8') as f:
+                    json.dump(tra_data, f, indent=2)
+
+                return {
+                    'total_tokens': total_tokens,
+                    'original_tokens': original_tokens,
+                    'saved_tokens': 0,
+                    'compression_ratio': 0,
+                    'history_items': len(simplified_history)
+                }
             
             for item in history:
                 if 'role' not in item:

@@ -63,7 +63,7 @@ class LLMClient:
             # 使用基本的OpenAI客户端调用，遵循api_test.py的工作模式
             # 不使用额外参数，避免服务器错误
             response = self.client.chat.completions.create(
-                model=self.config["name"],
+                model="/".join(self.config["name"].split("/")[1:]), 
                 messages=messages,
                 temperature=temperature,
             )
@@ -139,7 +139,7 @@ class TrajectorySummarizer:
         self.logger = get_se_logger("traj_summarizer", emoji="📊")
     
     def summarize_trajectory(self, trajectory_content: str, patch_content: str, 
-                           iteration: int) -> Dict[str, Any]:
+                           iteration: int, problem_description: Optional[str] = None) -> Dict[str, Any]:
         """
         使用LLM总结轨迹内容
         
@@ -147,6 +147,7 @@ class TrajectorySummarizer:
             trajectory_content: .tra文件内容
             patch_content: .patch/.pred文件内容 (预测结果)
             iteration: 迭代次数
+            problem_description: 问题描述（可选，将并入提示词）
             
         Returns:
             轨迹总结字典
@@ -158,7 +159,7 @@ class TrajectorySummarizer:
         try:
             # 获取提示词
             system_prompt = summarizer.get_system_prompt()
-            user_prompt = summarizer.format_user_prompt(trajectory_content, patch_content)
+            user_prompt = summarizer.format_user_prompt(trajectory_content, patch_content, problem_description)
             
             self.logger.info(f"开始LLM轨迹总结 (迭代{iteration})")
             

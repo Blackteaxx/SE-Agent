@@ -7,9 +7,9 @@ Trajectory Pool Summary Operator
 生成简洁的风险感知解决指导。
 """
 
-import json
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Any, Dict, List
+
 from operators import TemplateOperator
 
 
@@ -35,18 +35,9 @@ class TrajPoolSummaryOperator(TemplateOperator):
         """
         instances = []
         
-        # 直接在工作目录中查找traj.pool文件
-        traj_pool_file = workspace_dir / "traj.pool"
-        if not traj_pool_file.exists():
-            self.logger.warning(f"traj.pool文件不存在: {traj_pool_file}")
-            return instances
-        
-        # 加载traj.pool数据
-        try:
-            with open(traj_pool_file, 'r', encoding='utf-8') as f:
-                pool_data = json.load(f)
-        except Exception as e:
-            self.logger.error(f"加载traj.pool失败 {traj_pool_file}: {e}")
+        # 通过父类方法加载 traj.pool 数据映射
+        pool_data = self._load_traj_pool(workspace_dir)
+        if not pool_data:
             return instances
         
         # 为每个实例创建实例信息
@@ -58,9 +49,10 @@ class TrajPoolSummaryOperator(TemplateOperator):
                     instances.append({
                         'instance_name': instance_name,
                         'instance_dir': workspace_dir,  # 使用工作目录作为实例目录
-                        'trajectory_file': traj_pool_file,  # 使用traj.pool文件
+                        'trajectory_file': workspace_dir / 'traj.pool',  # 指向 traj.pool 文件
                         'previous_iteration': current_iteration - 1,
-                        'pool_data': instance_data  # 附加池数据
+                        'pool_data': instance_data,  # 附加池数据用于后续处理
+                        'problem_description': instance_data.get('problem', {})
                     })
         
         self.logger.info(f"发现 {len(instances)} 个可处理的实例")
@@ -73,29 +65,7 @@ class TrajPoolSummaryOperator(TemplateOperator):
         """
         return "placeholder"
     
-    def _load_traj_pool(self, instance_dir: Path) -> Dict[str, Any]:
-        """加载轨迹池数据 - 适配SE框架的traj.pool格式"""
-        traj_pool_file = instance_dir / "traj.pool"
-        
-        if not traj_pool_file.exists():
-            self.logger.warning(f"traj.pool文件不存在: {traj_pool_file}")
-            return {}
-        
-        try:
-            with open(traj_pool_file, 'r', encoding='utf-8') as f:
-                pool_data = json.load(f)
-            
-            # SE框架的traj.pool格式: {instance_name: {problem: str, "1": {data}, "2": {data}}}
-            # 提取第一个实例的数据
-            for instance_name, instance_data in pool_data.items():
-                if isinstance(instance_data, dict):
-                    return instance_data
-            
-            return {}
-            
-        except Exception as e:
-            self.logger.error(f"加载traj.pool失败 {traj_pool_file}: {e}")
-            return {}
+    # 移除本地加载方法，统一由父类提供 _load_traj_pool
     
     def _format_approaches_data(self, approaches_data: Dict[str, Any]) -> str:
         """格式化历史尝试数据为简洁文本"""
@@ -168,8 +138,8 @@ Keep total response under 200 words. Be specific and actionable."""
             self.logger.warning(f"跳过 {instance_name}: 无轨迹池数据")
             return ""
         
-        # 使用占位符问题陈述（因为当前traj.pool格式没有problem字段）
-        pool_problem = f"Instance {instance_name} software engineering problem"
+        # 使用实例信息中的问题陈述
+        pool_problem = instance_info.get('problem_description', 'N/A')
         
         # 获取所有迭代数据（数字键）
         iteration_data = {k: v for k, v in approaches_data.items() 

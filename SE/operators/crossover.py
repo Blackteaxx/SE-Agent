@@ -7,7 +7,6 @@ Crossover Operator
 当有效条数不足时，记录错误并跳过处理。
 """
 
-import json
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from operators import TemplateOperator
@@ -22,28 +21,7 @@ class CrossoverOperator(TemplateOperator):
     def get_strategy_prefix(self) -> str:
         return "CROSSOVER STRATEGY"
     
-    def _load_traj_pool(self, workspace_dir: Path) -> Dict[str, Any]:
-        """加载轨迹池数据"""
-        traj_pool_file = workspace_dir / "traj.pool"
-        
-        if not traj_pool_file.exists():
-            self.logger.warning(f"traj.pool文件不存在: {traj_pool_file}")
-            return {}
-        
-        try:
-            with open(traj_pool_file, 'r', encoding='utf-8') as f:
-                pool_data = json.load(f)
-            
-            # 返回第一个实例的数据
-            for instance_name, instance_data in pool_data.items():
-                if isinstance(instance_data, dict):
-                    return instance_data
-            
-            return {}
-            
-        except Exception as e:
-            self.logger.error(f"加载traj.pool失败 {traj_pool_file}: {e}")
-            return {}
+    # 轨迹池加载统一由父类实现 _load_traj_pool
     
     def _get_valid_iterations(self, approaches_data: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
         """获取有效的迭代数据"""
@@ -146,7 +124,7 @@ The strategy should be conceptual yet actionable, providing a framework that an 
         
         # 加载轨迹池数据（从workspace_dir，通过instance_dir计算）
         workspace_dir = instance_info['instance_dir'].parent.parent
-        approaches_data = self._load_traj_pool(workspace_dir)
+        approaches_data = self._load_traj_pool(workspace_dir, instance_name)
         if not approaches_data:
             self.logger.warning(f"跳过 {instance_name}: 无轨迹池数据")
             return ""

@@ -23,32 +23,6 @@ class TrajectoryAnalyzerOperator(TemplateOperator):
     def get_strategy_prefix(self) -> str:
         return "SOLUTION STRATEGY"
     
-    def _extract_detailed_problem_statement(self, trajectory_data: Dict[str, Any]) -> str:
-        """从轨迹数据中提取详细的问题陈述"""
-        try:
-            trajectory = trajectory_data.get('Trajectory', [])
-            if len(trajectory) >= 2:
-                user_item = trajectory[1]  # 第二项（索引1）
-                if user_item.get('role') == 'user' and 'content' in user_item:
-                    content = user_item['content']
-                    
-                    # 提取文本内容
-                    if isinstance(content, list) and len(content) > 0:
-                        text = content[0].get('text', '')
-                    elif isinstance(content, str):
-                        text = content
-                    else:
-                        return ""
-                    
-                    # 提取<pr_description>标签内的内容
-                    match = re.search(r'<pr_description>\s*(.*?)\s*</pr_description>', text, re.DOTALL)
-                    if match:
-                        return match.group(1).strip()
-            return ""
-        except Exception as e:
-            self.logger.error(f"提取问题陈述失败: {e}")
-            return ""
-    
     def _extract_trajectory_analysis(self, trajectory_data: Dict[str, Any]) -> str:
         """提取轨迹分析信息"""
         try:
@@ -143,9 +117,7 @@ Craft a strategy that empowers an AI agent to reconceptualize the problem from g
         instance_name = instance_info['instance_name']
         
         # 提取详细的问题陈述
-        detailed_problem = self._extract_detailed_problem_statement(trajectory_data)
-        if not detailed_problem:
-            detailed_problem = problem_statement
+        detailed_problem = problem_statement
         
         # 提取轨迹分析
         trajectory_analysis = self._extract_trajectory_analysis(trajectory_data)

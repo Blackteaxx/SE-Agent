@@ -25,8 +25,9 @@ class TrajSummarizer:
         return """You are an AI assistant specialized in analyzing software engineering trajectories. Your task is to analyze execution trajectories from SWE-agent runs and provide structured insights about the solution approach.
 
 You will be provided with:
-1. A trajectory file (.tra) in JSON format containing the agent's step-by-step execution
-2. A prediction file (.pred) containing the final result
+1. A problem description (optional)
+2. A trajectory file (.tra) in JSON format containing the agent's step-by-step execution
+3. A prediction file (.pred) containing the final result
 
 Your goal is to extract and summarize the core solution strategy, techniques, and approaches used in this trajectory.
 
@@ -52,6 +53,9 @@ Focus on extracting actionable insights about the solution methodology rather th
         """
         return """Please analyze the following SWE-agent trajectory and provide insights about the solution approach.
 
+Problem Description:
+{problem_description}
+
 Trajectory Data (.tra file):
 {trajectory_content}
 
@@ -60,19 +64,21 @@ Prediction Result (.patch/.pred file):
 
 Please provide your analysis in the JSON format specified in the system prompt."""
 
-    def format_user_prompt(self, trajectory_content: str, patch_content: str) -> str:
+    def format_user_prompt(self, trajectory_content: str, patch_content: str, problem_description: Optional[str] = None) -> str:
         """
         格式化用户提示词
         
         Args:
             trajectory_content: 轨迹文件内容
             patch_content: 预测文件内容 (.patch/.pred)
+            problem_description: 问题描述（可选）
             
         Returns:
             格式化后的用户提示词
         """
         template = self.get_user_prompt_template()
         return template.format(
+            problem_description=problem_description or "N/A",
             trajectory_content=trajectory_content,
             patch_content=patch_content
         )
