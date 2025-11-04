@@ -31,7 +31,6 @@ out/
 .nuxt/
 .cache/
 .vuepress/dist
-tests/
 trajectories/*
 !trajectories/demonstrations
 gyf/
@@ -116,3 +115,6 @@ complete_pred
 preds
 .cursorrules
 SE/trajectories/*
+
+# 数据文件
+SE/instances/EffiBench-X/dataset/*
