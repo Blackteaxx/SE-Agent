@@ -330,3 +330,4 @@ def run_tests(
                 continue
             logging.error(f"All backends failed after {backend_retries} retries: {e}")
             raise
+    return None

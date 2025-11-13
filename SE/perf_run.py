@@ -6,11 +6,11 @@ PerfAgent 集成执行脚本
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
 import tempfile
-import math
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -73,6 +73,7 @@ def call_operator(operator_name, workspace_dir, current_iteration, se_config, lo
         logger.error(f"Operator {operator_name} 执行失败: {e}", exc_info=True)
         return None
 
+
 def write_iteration_preds(base_dir: Path, logger) -> Optional[Path]:
     """
     聚合当前迭代各实例的结果，生成 preds.json。
@@ -127,7 +128,9 @@ def write_iteration_preds(base_dir: Path, logger) -> Optional[Path]:
 
 def aggregate_all_iterations_preds(root_output_dir: Path, logger) -> Optional[Path]:
     """
-    汇总所有 iteration_* 目录下的 preds.json，过滤未通过项，添加迭代号并写入运行根目录的 preds.json。
+    汇总所有 iteration_* 目录下的 preds.json，添加迭代号并写入运行根目录的 preds.json。
+
+    变更：不再过滤未通过项。对于未通过的实例，其 code 字段明确设为空字符串""，以避免后续输出缺失。
 
     输出结构示例：
     {
@@ -136,7 +139,7 @@ def aggregate_all_iterations_preds(root_output_dir: Path, logger) -> Optional[Pa
         {"iteration": 2, "code": "...", "runtime": 1.11}
       ],
       "inst2": [
-        {"iteration": 2, "code": "...", "runtime": 0.98}
+        {"iteration": 2, "code": "", "runtime": "Infinity"}
       ]
     }
     """
@@ -162,9 +165,9 @@ def aggregate_all_iterations_preds(root_output_dir: Path, logger) -> Optional[Pa
 
             for instance_id, info in preds.items():
                 try:
-                    if not bool(info.get("passed", False)):
-                        continue
-                    code = info.get("code", "")
+                    passed = bool(info.get("passed", False))
+                    # 未通过的实例，code 明确置为空字符串
+                    code = info.get("code", "") if passed else ""
                     runtime = info.get("runtime")
                     entry = {"iteration": iter_num, "code": code, "runtime": runtime}
                     aggregated.setdefault(str(instance_id), []).append(entry)
@@ -215,6 +218,7 @@ def write_final_json_from_preds(aggregated_preds_path: Path, root_output_dir: Pa
 
     final_map: dict[str, str] = {}
     try:
+        # 先根据最小 runtime 选择最佳解；若均未通过（runtime 为 inf），code 会是空字符串
         for instance_id, entries in aggregated.items():
             if not isinstance(entries, list) or not entries:
                 continue
@@ -222,7 +226,9 @@ def write_final_json_from_preds(aggregated_preds_path: Path, root_output_dir: Pa
                 best = min(entries, key=lambda e: to_float(e.get("runtime")))
             except Exception:
                 continue
-            final_map[str(instance_id)] = best.get("code", "")
+            final_map[str(instance_id)] = best.get("code", "") or ""
+
+        # 注：不再进行“补齐空字符串”，final.json 仅依据汇总 preds.json 的最小 runtime 选择结果。
 
         final_path = root_output_dir / "final.json"
         with open(final_path, "w", encoding="utf-8") as f:
@@ -234,6 +240,71 @@ def write_final_json_from_preds(aggregated_preds_path: Path, root_output_dir: Pa
         logger.warning(f"生成 final.json 失败: {e}")
         return None
 
+
+def create_temp_perf_config(
+    base_config_path: Optional[str],
+    se_model_cfg: dict,
+    logger,
+    extra_overrides: Optional[dict] = None,
+) -> Optional[Path]:
+    """基于基础配置生成一个临时 PerfAgent 配置文件，并按需覆盖字段。
+
+    - 覆盖模型相关字段（来自 SE 主模型设置）
+    - 覆盖顶层控制字段（目前支持 max_iterations），用于与 SE 配置对齐
+
+    返回临时配置文件路径；若失败则返回 None。
+    """
+    try:
+        perf_cfg = {}
+        if base_config_path:
+            with open(base_config_path, "r", encoding="utf-8") as f:
+                perf_cfg = yaml.safe_load(f) or {}
+
+        # 仅覆盖 PerfAgent 支持的模型字段
+        allowed_keys = [
+            "name",
+            "api_base",
+            "api_key",
+            "max_input_tokens",
+            "max_output_tokens",
+            "temperature",
+        ]
+        override_model = {
+            k: v
+            for k, v in (se_model_cfg or {}).items()
+            if k in allowed_keys and v is not None and (str(v).strip() != "")
+        }
+
+        perf_cfg.setdefault("model", {})
+        perf_cfg["model"].update(override_model)
+
+        # 顶层覆盖：支持从 SE 配置传入的 max_iterations
+        if extra_overrides:
+            if "max_iterations" in extra_overrides:
+                mi = extra_overrides.get("max_iterations")
+                if mi is not None and str(mi).strip() != "":
+                    try:
+                        perf_cfg["max_iterations"] = int(mi)
+                    except Exception:
+                        # 若无法转换为整数，仍按原值写入，避免中断
+                        perf_cfg["max_iterations"] = mi
+
+        # 生成临时 YAML 文件
+        tmp = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
+        yaml.safe_dump(perf_cfg, tmp, sort_keys=False, allow_unicode=True)
+        tmp_path = Path(tmp.name)
+        tmp.close()
+
+        print(f"🧩 已生成临时PerfAgent配置: {tmp_path}")
+        logger.info(f"临时PerfAgent配置(模型覆盖): {json.dumps(override_model, ensure_ascii=False)}")
+        if extra_overrides and "max_iterations" in extra_overrides:
+            logger.info(f"临时PerfAgent配置(迭代覆盖): max_iterations={perf_cfg.get('max_iterations')}")
+        return tmp_path
+    except Exception as e_cfg:
+        logger.warning(f"生成临时PerfAgent配置失败: {e_cfg}")
+        return None
+
+
 def call_perfagent(iteration_params, logger, dry_run=False):
     """
     直接调用 perfagent.run_batch 的批量执行接口，运行本次迭代的实例优化
@@ -241,10 +312,8 @@ def call_perfagent(iteration_params, logger, dry_run=False):
     base_config_path = iteration_params.get("perf_base_config")
 
     try:
-        # 使用基础配置文件，不创建临时配置
+        # 基础配置 + SE 主模型配置覆盖 => 生成临时 PerfAgent 配置
         logger.debug(f"使用PerfAgent基础配置: {base_config_path}")
-        if base_config_path:
-            print(f"📋 使用基础配置文件: {base_config_path}")
 
         if dry_run:
             logger.warning("演示模式：跳过PerfAgent实际执行")
@@ -258,23 +327,40 @@ def call_perfagent(iteration_params, logger, dry_run=False):
         instances_dir = iteration_params.get("instances_dir")
 
         # 基础目录：使用当前迭代的输出目录，让每个实例在其子目录下生成日志与轨迹
-        base_dir = Path(iteration_params["output_dir"])
-        
+        base_dir = Path(iteration_params["output_dir"]).resolve()
+        base_dir.mkdir(parents=True, exist_ok=True)
+
+        # 封装：生成临时配置（包含模型覆盖）；失败则回退到基础配置
+        se_model_cfg = iteration_params.get("model") or {}
+        if base_config_path:
+            print(f"📋 使用基础配置文件: {base_config_path}")
+        temp_config_path = (
+            create_temp_perf_config(
+                base_config_path,
+                se_model_cfg,
+                logger,
+                extra_overrides={
+                    "max_iterations": iteration_params.get("max_iterations"),
+                },
+            )
+            or base_config_path
+        )
+
         # 优先使用基础配置；如果提供 instance_templates_dir，则交由 run_batch 做每任务合并
-        # 组装命令
-        cmd = [
-            sys.executable,
-            "-m",
-            "perfagent.run_batch",
-            "--config",
-            str(base_config_path),
-            "--instances-dir",
-            str(instances_dir),
-            "--base-dir",
-            str(base_dir),
-            "--max-workers",
-            str(iteration_params.get("num_workers", 1)),
-        ]
+        # 组装命令：先放 --config（若有），再依次加入其他参数，避免解析冲突
+        cmd = [sys.executable, "-m", "perfagent.run_batch"]
+        if temp_config_path:
+            cmd.extend(["--config", str(temp_config_path)])
+        cmd.extend(
+            [
+                "--instances-dir",
+                str(instances_dir),
+                "--base-dir",
+                str(base_dir),
+                "--max-workers",
+                str(iteration_params.get("num_workers", 1)),
+            ]
+        )
 
         # 若 operator 返回 instance_templates_dir，则传给 run_batch 做每任务合并
         operator_params = iteration_params.get("operator_params", {}) or {}
@@ -311,238 +397,6 @@ def call_perfagent(iteration_params, logger, dry_run=False):
     finally:
         # 无临时配置需要清理
         pass
-
-
-def _get_nested(data: dict, path: str):
-    cur = data
-    for key in path.split("."):
-        if not isinstance(cur, dict):
-            return None
-        cur = cur.get(key)
-        if cur is None:
-            return None
-    return cur
-
-
-def _normalize_text_or_list(val) -> str:
-    if val is None:
-        return ""
-    if isinstance(val, str):
-        return val.strip()
-    if isinstance(val, list):
-        # 以项目符号的形式组合列表内容
-        items = []
-        for v in val:
-            if isinstance(v, str):
-                t = v.strip()
-            else:
-                t = str(v).strip()
-            if t:
-                items.append(f"- {t}")
-        return "\n".join(items)
-    # 其他类型回退为字符串
-    try:
-        return str(val).strip()
-    except Exception:
-        return ""
-
-
-def build_additional_requirements_from_dir(templates_dir: Path, logger) -> str:
-    """从 YAML 模板目录构建 additional_requirements 文本。
-
-    支持的键（按优先级聚合）：
-    - additional_requirements
-    - templates.additional_requirements
-    - agent.templates.additional_requirements
-    - system_template_append
-    - templates.system_template_append
-    - agent.templates.system_template_append
-    - system_template
-    - templates.system_template
-    - agent.templates.system_template
-    """
-    if not templates_dir or not Path(templates_dir).exists():
-        return ""
-
-    pieces = []
-    try:
-        yaml_files = list(Path(templates_dir).glob("*.y*ml"))
-        for yf in yaml_files:
-            try:
-                with open(yf, "r", encoding="utf-8") as f:
-                    data = yaml.safe_load(f) or {}
-            except Exception as e:
-                logger.warning(f"读取模板 {yf} 失败: {e}")
-                continue
-
-            key_paths = [
-                "additional_requirements",
-                "templates.additional_requirements",
-                "agent.templates.additional_requirements",
-                "system_template_append",
-                "templates.system_template_append",
-                "agent.templates.system_template_append",
-                "system_template",
-                "templates.system_template",
-                "agent.templates.system_template",
-            ]
-
-            for kp in key_paths:
-                val = _get_nested(data, kp)
-                text = _normalize_text_or_list(val)
-                if text:
-                    pieces.append(text)
-    except Exception as e:
-        logger.warning(f"扫描模板目录失败: {e}")
-
-    # 合并为一个文本块
-    merged = "\n\n".join(pieces).strip()
-    return merged
-
-
-def create_temp_perf_config(iteration_params, base_config_path, logger) -> Optional[Path]:
-    """创建临时 PerfAgent 配置，将算子生成的 instance_templates_dir 合并为 prompts.additional_requirements。
-
-    - 读取基础 PerfAgent 配置 YAML
-    - 从 operator_params.instance_templates_dir 构建 additional_requirements 文本
-    - 若基础配置已有 prompts.additional_requirements，则进行合并拼接
-    - 移除 prompts.instance_templates_dir 避免歧义
-    - 写出临时 YAML 文件并返回路径；若无可注入内容则返回 None
-    """
-    if not base_config_path:
-        return None
-    try:
-        with open(base_config_path, "r", encoding="utf-8") as f:
-            base_cfg = yaml.safe_load(f) or {}
-    except Exception as e:
-        logger.warning(f"读取基础PerfAgent配置失败: {e}")
-        return None
-
-    operator_params = iteration_params.get("operator_params", {}) or {}
-
-    # 1) 优先从算子输出目录构建
-    add_texts = []
-    itd = operator_params.get("instance_templates_dir")
-    if itd:
-        try:
-            txt = build_additional_requirements_from_dir(Path(itd), logger)
-            if txt:
-                add_texts.append(txt)
-        except Exception as e:
-            logger.warning(f"解析算子模板目录失败: {e}")
-
-    # 2) 直接从算子返回 additional_requirements（若有）
-    op_additional = operator_params.get("additional_requirements")
-    if op_additional:
-        txt = _normalize_text_or_list(op_additional)
-        if txt:
-            add_texts.append(txt)
-
-    # 3) 基础配置中已有的 additional_requirements（若有），也并入
-    existing_base = None
-    try:
-        existing_base = base_cfg.get("prompts", {}).get("additional_requirements")
-    except Exception:
-        existing_base = None
-    if existing_base:
-        txt = _normalize_text_or_list(existing_base)
-        if txt:
-            add_texts.append(txt)
-
-    # 若没有任何附加内容，不生成临时配置
-    merged_text = "\n\n".join([t for t in add_texts if t]).strip()
-    if not merged_text:
-        return None
-
-    # 注入到 prompts.additional_requirements，并移除旧字段
-    if "prompts" not in base_cfg or base_cfg.get("prompts") is None:
-        base_cfg["prompts"] = {}
-    base_cfg["prompts"]["additional_requirements"] = merged_text
-    if "instance_templates_dir" in base_cfg["prompts"]:
-        base_cfg["prompts"].pop("instance_templates_dir", None)
-
-    # 写出临时配置
-    fd, temp_path = tempfile.mkstemp(suffix=".yaml", prefix="perfagent_iteration_")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as tmp:
-            yaml.safe_dump(base_cfg, tmp, allow_unicode=True, sort_keys=False)
-    except Exception as e:
-        try:
-            os.close(fd)
-        except Exception:
-            pass
-        try:
-            os.unlink(temp_path)
-        except Exception:
-            pass
-        logger.warning(f"写出临时PerfAgent配置失败: {e}")
-        return None
-
-    return Path(temp_path)
-
-def generate_per_task_configs(base_config_path: Path, instances_dir: Path, output_dir: Path, operator_result: dict, logger) -> Optional[Path]:
-    """基于基础配置生成每任务配置，注入 additional_requirements。
-
-    - 若 operator_result 提供 instance_templates_dir，则读取并构建附加要求文本。
-    - 将该文本写入 prompts.additional_requirements 字段。
-    - 为每个实例生成一个 <task_name>.yaml 配置文件。
-    """
-    if not base_config_path or not Path(base_config_path).exists():
-        logger.warning("未提供有效的 PerfAgent 基础配置，跳过每任务配置生成")
-        return None
-
-    instances_path = Path(instances_dir)
-    if not instances_path.exists():
-        logger.warning("实例目录不存在，跳过每任务配置生成")
-        return None
-
-    # 解析 operator 结果
-    add_req_text = ""
-    try:
-        if operator_result:
-            itd = operator_result.get("instance_templates_dir")
-            if itd:
-                add_req_text = build_additional_requirements_from_dir(Path(itd), logger)
-            else:
-                # 允许算子直接返回 additional_requirements
-                add_req_text = _normalize_text_or_list(operator_result.get("additional_requirements"))
-    except Exception as e:
-        logger.warning(f"处理 operator 结果失败: {e}")
-
-    if not add_req_text:
-        # 无附加要求则不生成每任务配置
-        return None
-
-    per_task_dir = Path(output_dir) / "per_task_configs"
-    per_task_dir.mkdir(parents=True, exist_ok=True)
-
-    # 读取基础配置一次
-    try:
-        with open(base_config_path, "r", encoding="utf-8") as f:
-            base_cfg = yaml.safe_load(f) or {}
-    except Exception as e:
-        logger.error(f"读取基础配置失败: {e}")
-        return None
-
-    # 注入 prompts.additional_requirements
-    if "prompts" not in base_cfg or base_cfg.get("prompts") is None:
-        base_cfg["prompts"] = {}
-    base_cfg["prompts"]["additional_requirements"] = add_req_text
-    # 移除旧字段以避免歧义（可选）
-    if "instance_templates_dir" in base_cfg["prompts"]:
-        base_cfg["prompts"].pop("instance_templates_dir", None)
-
-    # 为每个实例写出专属配置
-    for inst_file in instances_path.glob("*.json"):
-        task_name = inst_file.stem
-        cfg_path = per_task_dir / f"{task_name}.yaml"
-        try:
-            with open(cfg_path, "w", encoding="utf-8") as f:
-                yaml.safe_dump(base_cfg, f, allow_unicode=True, sort_keys=False)
-        except Exception as e:
-            logger.warning(f"写出每任务配置失败 {cfg_path}: {e}")
-
-    return per_task_dir
 
 
 def main():
@@ -592,7 +446,8 @@ def main():
         except Exception as e:
             logger.warning(f"LLM客户端初始化失败，将使用备用总结: {e}")
 
-        traj_pool_manager = TrajPoolManager(traj_pool_path, llm_client)
+        # 将 se_config 中的并发控制传入 TrajPoolManager
+        traj_pool_manager = TrajPoolManager(traj_pool_path, llm_client, num_workers=se_config.get("num_workers"))
         traj_pool_manager.initialize_pool()
         logger.info(f"轨迹池初始化: {traj_pool_path}")
         print(f"🏊 轨迹池: {traj_pool_path}")
@@ -654,10 +509,11 @@ def main():
                 result = call_perfagent(iteration_params, logger, dry_run=False)
                 print(f"执行结果: {result['status']}")
 
-                # 成功则生成.tra并更新轨迹池
+                # 成功则生成.tra并更新 traj.pool
+                # .tra 直接使用 history 生成
+                # traj.pool 轨迹总结通过 LLM Summary 生成
                 if result.get("status") == "success":
                     logger.info(f"开始为第{i}次迭代生成.tra文件")
-                    # 生成 .tra 文件
                     try:
                         processor = TrajectoryProcessor()
                         iteration_dir = Path(iteration_output_dir)
@@ -676,20 +532,11 @@ def main():
                                 extractor = TrajExtractor()
                                 instance_data_list = extractor.extract_instance_data(iteration_dir)
                                 if instance_data_list:
-                                    for (
-                                        instance_name,
-                                        problem_description,
-                                        trajectory_content,
-                                        patch_content,
-                                    ) in instance_data_list:
-                                        traj_pool_manager.add_iteration_summary(
-                                            instance_name=instance_name,
-                                            iteration=i,
-                                            trajectory_content=trajectory_content,
-                                            patch_content=patch_content,
-                                            problem_description=problem_description or None,
-                                        )
-                                    logger.info(f"成功提取并处理了 {len(instance_data_list)} 个实例")
+                                    # 交由 TrajPoolManager 并行生成并批量写入，避免并发写文件
+                                    processed_count = traj_pool_manager.summarize_and_add_iteration_batch(
+                                        instance_data_list, iteration=i, num_workers=se_config.get("num_workers")
+                                    )
+                                    logger.info(f"成功提取并处理了 {processed_count} 个实例")
                                 else:
                                     logger.warning(f"第{i}次迭代没有找到有效的实例数据")
                                     print("⚠️ 没有找到有效的实例数据")
@@ -710,6 +557,7 @@ def main():
                     except Exception as tra_error:
                         logger.error(f"第{i}次迭代生成.tra文件失败: {tra_error}")
                         print(f"⚠️ .tra文件生成失败: {tra_error}")
+
             else:
                 logger.info(f"演示模式：第{i}次PerfAgent迭代")
                 result = call_perfagent(iteration_params, logger, dry_run=True)
@@ -752,7 +600,6 @@ def main():
         except Exception as sel_err:
             logger.warning(f"选择最优解失败: {sel_err}")
 
-
     except Exception as e:
         if "logger" in locals():
             logger.error(f"运行出错: {e}", exc_info=True)
@@ -762,4 +609,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

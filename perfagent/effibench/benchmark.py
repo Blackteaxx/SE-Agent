@@ -87,7 +87,7 @@ def run_performance_benchmark(
             "first_run_details": [],
             "failed_submission_exit_codes": [],
             "pass_rates": [],
-            "pass_rate_consistent": False,
+            "pass_rate_consistent": True,
         }
 
     first_run_results = all_results[0]

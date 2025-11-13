@@ -32,9 +32,31 @@ def load_instance_data(instance_path: Path) -> EffiBenchXInstance:
     return inst
 
 
-def run_single_instance(config: PerfAgentConfig, instance_path: Path, base_dir: Optional[Path] = None) -> Dict[str, Any]:
+def run_single_instance(
+    config: PerfAgentConfig, instance_path: Path, base_dir: Optional[Path] = None
+) -> Dict[str, Any]:
     """运行单个实例的优化"""
-    # 初始使用主日志器，后续在实例目录内绑定专属文件日志器
+    # 初始绑定主日志器到 base_dir（或配置的 log_dir），后续在实例目录内绑定专属文件日志器
+    try:
+        pre_log_path = (
+            Path(base_dir) / "perfagent.log"
+            if base_dir
+            else Path(config.logging.log_dir) / "perfagent.log"
+        )
+        get_se_logger(
+            "perfagent.run_single.main",
+            pre_log_path,
+            emoji="🚀",
+            level=getattr(logging, config.logging.log_level.upper()),
+        )
+    except Exception:
+        # 回退到配置的 log_dir
+        get_se_logger(
+            "perfagent.run_single.main",
+            Path(config.logging.log_dir) / "perfagent.log",
+            emoji="🚀",
+            level=getattr(logging, config.logging.log_level.upper()),
+        )
     logger = logging.getLogger("perfagent.run_single.main")
 
     try:
@@ -63,13 +85,16 @@ def run_single_instance(config: PerfAgentConfig, instance_path: Path, base_dir: 
         instance_output_dir.mkdir(parents=True, exist_ok=True)
 
         # 在实例目录内绑定专属日志文件（覆盖之前的主日志器用途）
+        # 使用唯一的 logger 名称以避免并发复用导致串写
+        instance_logger_name = f"perfagent.run_single.instance.{task_name}"
         get_se_logger(
-            "perfagent.run_single.instance",
+            instance_logger_name,
             instance_output_dir / "perfagent.log",
             emoji="🎯",
             level=getattr(logging, config.logging.log_level.upper()),
+            also_stream=False,
         )
-        logger = logging.getLogger("perfagent.run_single.instance")
+        logger = logging.getLogger(instance_logger_name)
 
         # 为当前实例定制配置：将轨迹目录重定向到实例目录
         local_config = copy.deepcopy(config)
@@ -81,13 +106,26 @@ def run_single_instance(config: PerfAgentConfig, instance_path: Path, base_dir: 
         result = agent.run(instance)
 
         logger.info(f"优化完成: {result['instance_id']}")
-        logger.info(
-            f"性能改进: {result.get('initial_performance', {}).get('performance_analysis', {}).get('trimmed_mean', 'N/A')} -> {result.get('final_performance', 'N/A')}"
-        )
+        # 兼容不同返回结构：initial_performance 可能是浮点数（trimmed_mean）或包含分析字典
+        try:
+            init_perf = result.get("initial_performance")
+            if isinstance(init_perf, dict):
+                init_trim = init_perf.get("performance_analysis", {}).get("trimmed_mean", "N/A")
+            else:
+                init_trim = init_perf
+
+            final_perf = result.get("final_performance", "N/A")
+            logger.info(f"性能改进: {init_trim} -> {final_perf}")
+        except Exception as e_log:
+            logger.warning(f"打印性能改进信息失败: {e_log}")
 
         # 写出问题描述到 <instance_dir>/<task_name>.problem
         try:
-            problem_text = getattr(instance, "description_md", None) or getattr(instance, "description", None) or getattr(instance, "title", "")
+            problem_text = (
+                getattr(instance, "description_md", None)
+                or getattr(instance, "description", None)
+                or getattr(instance, "title", "")
+            )
             if problem_text:
                 problem_file = instance_output_dir / f"{task_name}.problem"
                 with open(problem_file, "w", encoding="utf-8") as pf:
@@ -184,6 +222,7 @@ def _json_safe(obj: Any) -> Any:
         except Exception:
             return "<unserializable>"
 
+
 # 批量运行逻辑已迁移到 perfagent/run_batch.py，这里只支持单实例
 
 
@@ -224,6 +263,8 @@ def main():
     parser.add_argument("--llm-log-sanitize", action="store_true", help="记录前进行敏感信息脱敏")
     parser.add_argument("--early-stop-no-improve", type=int, help="连续未改进次数达到阈值后提前停止")
     # 不再接受 instance-templates-dir，改由 prompts.additional_requirements 承载（SE 层负责生成）
+    # 允许通过 CLI 指定 per-instance 初始代码目录（按实例名匹配）
+    parser.add_argument("--initial-code-dir", type=Path, help="每实例初始代码目录（按实例文件名匹配）")
 
     args = parser.parse_args()
 
@@ -253,7 +294,7 @@ def main():
     )
     logger = logging.getLogger("perfagent.run_single.main")
     logger.info("PerfAgent 启动")
-    
+
     # 打印所有配置项
     logger.info(f"配置: {json.dumps(_json_safe(config.to_dict()), indent=2, ensure_ascii=False)}")
 
@@ -280,4 +321,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

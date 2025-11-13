@@ -80,7 +80,9 @@ class TrajectoryLogger:
             # 兼容：未提供 log_dir 时，按实例单独写入轨迹目录
             log_file = Path(trajectory_dir) / f"{instance_id}.log"
 
-        self.logger = get_se_logger(f"perfagent.trajectory.{instance_id}", log_file)
+        # 轨迹日志器使用唯一名称，并关闭终端输出，避免与实例日志竞争
+        traj_logger_name = f"perfagent.trajectory.{instance_id}"
+        self.logger = get_se_logger(traj_logger_name, log_file, also_stream=False)
 
     def add_history(self, role: str, content: str, message_type: str, agent: Optional[str] = None) -> None:
         """记录对话历史（multi-turn chat）"""

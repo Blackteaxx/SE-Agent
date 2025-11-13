@@ -9,6 +9,7 @@ Trajectory Pool Summary Operator
 
 from pathlib import Path
 from typing import Any, Dict, List
+import textwrap
 
 from operators import TemplateOperator
 
@@ -68,63 +69,126 @@ class TrajPoolSummaryOperator(TemplateOperator):
     # 移除本地加载方法，统一由父类提供 _load_traj_pool
     
     def _format_approaches_data(self, approaches_data: Dict[str, Any]) -> str:
-        """格式化历史尝试数据为简洁文本"""
-        formatted_text = ""
-        
+        """格式化历史尝试数据为通用的嵌套文本结构。
+
+        - 保留字典键原始顺序
+        - 两空格缩进层级
+        - 列表项以 "- " 前缀展示
+        - 多行字符串块式缩进
+        - 跳过空值/空列表/空字典
+        """
+
+        def _fmt(value: Any, indent: int) -> str:
+            prefix = "  " * indent
+            if isinstance(value, dict):
+                lines: List[str] = []
+                for k, v in value.items():
+                    if v is None or v == "" or (isinstance(v, (list, dict)) and len(v) == 0):
+                        continue
+                    if isinstance(v, (int, float)):
+                        lines.append(f"{prefix}{k}: {v}")
+                    elif isinstance(v, bool):
+                        lines.append(f"{prefix}{k}: {'true' if v else 'false'}")
+                    elif isinstance(v, str) and "\n" not in v:
+                        lines.append(f"{prefix}{k}: {v}")
+                    else:
+                        lines.append(f"{prefix}{k}:")
+                        child = _fmt(v, indent + 1)
+                        if child:
+                            lines.append(child)
+                return "\n".join(lines)
+            if isinstance(value, list):
+                lines: List[str] = []
+                for item in value:
+                    if item is None or item == "":
+                        continue
+                    if isinstance(item, (int, float)):
+                        lines.append(f"{prefix}- {item}")
+                    elif isinstance(item, bool):
+                        lines.append(f"{prefix}- {'true' if item else 'false'}")
+                    elif isinstance(item, str) and "\n" not in item:
+                        lines.append(f"{prefix}- {item}")
+                    else:
+                        child = _fmt(item, indent + 1)
+                        if child:
+                            child_lines = child.splitlines()
+                            if child_lines:
+                                child_prefix = "  " * (indent + 1)
+                                first = child_lines[0]
+                                if first.startswith(child_prefix):
+                                    first = first[len(child_prefix):]
+                                lines.append(f"{prefix}- {first}")
+                                for cl in child_lines[1:]:
+                                    if cl.startswith(child_prefix):
+                                        cl = cl[len(child_prefix):]
+                                    lines.append(f"{prefix}  {cl}")
+                return "\n".join(lines)
+            if isinstance(value, str):
+                if "\n" in value:
+                    return textwrap.indent(value, "  " * indent)
+                return f"{prefix}{value}"
+            if isinstance(value, bool):
+                return f"{prefix}{'true' if value else 'false'}"
+            if isinstance(value, (int, float)):
+                return f"{prefix}{value}"
+            return f"{prefix}{str(value)}"
+
+        parts: List[str] = []
         for key, data in approaches_data.items():
             if key == "problem":
                 continue
-                
             if isinstance(data, dict):
-                formatted_text += f"\nATTEMPT {key}:\n"
-                formatted_text += f"Strategy: {data.get('strategy', 'N/A')}\n"
-                formatted_text += f"Files Modified: {', '.join(data.get('modified_files', []))}\n"
-                formatted_text += f"Key Changes: {'; '.join(data.get('key_changes', []))}\n"
-                formatted_text += f"Tools: {', '.join(data.get('tools_used', []))}\n"
-                formatted_text += f"Assumptions: {'; '.join(data.get('assumptions_made', []))}\n"
-        
-        return formatted_text
+                parts.append(f"ATTEMPT {key}:")
+                body = _fmt(data, 0)
+                if body:
+                    parts.append(body)
+        return "\n".join(parts)
     
     def _generate_risk_aware_guidance(self, problem_statement: str, approaches_data: Dict[str, Any]) -> str:
-        """生成简洁的风险感知指导"""
+        """
+        (V5 - 自包含描述，消除代号引用)
+        分析所有轨迹，生成用于下一次迭代的、综合了所有经验的、自包含的准确指导。
+        """
         
-        system_prompt = """You are a software engineering consultant specializing in failure analysis. Analyze failed attempts and provide concise, actionable guidance for avoiding common pitfalls.
+        # Persona: 强调“综合分析”和“清晰指令”
+        # Task: 任务是基于历史数据，发出一个独立的、无需上下文的下一步指令
+        # Context: 明确指出下游 Agent 看不到原始轨迹，必须自包含
+        # Format: 保持清晰的三段式结构，严禁使用代号
+        system_prompt = """You are an expert algorithmic strategist and performance analyst. Your task is to analyze a set of all optimization trajectories and synthesize a single, actionable guidance for the next optimization iteration.
 
-Your output will be used as system prompt guidance, so be direct and specific.
+    CRITICAL REQUIREMENT: The agent reading your output will NOT have access to the original trajectory history (T1, T2, etc.). Therefore, your guidance must be **completely self-contained**.
 
-Focus on:
-1. Key blind spots to avoid
-2. Critical risk points
-3. Brief strategic approach
+    DO NOT use references like "Combine T1 with T3", "Avoid the mistake in Trajectory 2", etc.
+    INSTEAD, explicitly describe the techniques: "Combine the O(N) monotonic stack algorithm (proven correct) with custom byte-level I/O parsing (proven fast)."
 
-IMPORTANT: 
-- Keep response under 200 words total
-- Use plain text, no formatting
-- Be specific and actionable
-- Focus on risk avoidance"""
+    Your goal is to provide a clear, confident, and optimal path forward that stands on its own.
+    """
         
         formatted_attempts = self._format_approaches_data(approaches_data)
         
-        prompt = f"""Analyze these failed attempts and provide concise guidance:
+        # Prompt:
+        # - 将 "FAILED ATTEMPTS" 改为 "PREVIOUS TRAJECTORIES"
+        # - 保持你的三段式结构，它对于这个任务仍然非常有效
+        prompt = f"""Analyze these solution trajectories and provide a single, self-contained actionable guidance for the *next* iteration:
 
-PROBLEM:
-{problem_statement[:300]}...
+    PROBLEM:
+    {problem_statement}...
 
-FAILED ATTEMPTS:
-{formatted_attempts[:800]}...
+    PREVIOUS TRAJECTORIES:
+    {formatted_attempts}...
 
-Provide concise guidance in this structure:
+    Provide concise guidance for the *next* attempt in this structure:
 
-BLIND SPOTS TO AVOID:
-[List 2-3 key systematic limitations observed]
+    KEY OBSERVATIONS:
+    [List 2-3 key learnings from *all* attempts. e.g., "O(N) stack is correct," "I/O is a major bottleneck."]
 
-CRITICAL RISKS:
-[List 2-3 specific failure patterns to watch for]
+    CRITICAL RISKS TO AVOID:
+    [List 2-3 specific failure patterns to *not* repeat. e.g., "Simplifying the stack logic breaks correctness," "O(N^3) DP is too slow."]
 
-STRATEGIC APPROACH:
-[2-3 sentences on how to approach this problem differently]
+    OPTIMAL NEXT STEP:
+    [2-3 sentences with a single, clear directive. e.g., "Combine the O(N) stack algorithm from T1 with the fast byte-parsing I/O from T3. This is the most promising hybrid."]
 
-Keep total response under 200 words. Be specific and actionable."""
+    Keep total response under 200 words. Ensure it is perfectly readable without knowing the previous trajectories. Be specific and actionable."""
         
         return self._call_llm_api(prompt, system_prompt)
     

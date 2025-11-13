@@ -12,14 +12,14 @@ SE Operators Base Classes
 import abc
 import concurrent.futures
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 from core.utils.se_logger import get_se_logger
 
-from sweagent.agent.models import GenericAPIModelConfig, get_model
-from sweagent.tools.tools import ToolConfig
+from core.utils.llm_client import LLMClient
 
 
 class BaseOperator(abc.ABC):
@@ -33,36 +33,20 @@ class BaseOperator(abc.ABC):
             config: 包含operator_models等配置信息
         """
         self.config = config
-        self.model = None  # LLM模型实例，延迟初始化
+        self.model = None  # LLM模型实例（旧路径）
+        self.llm_client: Optional[LLMClient] = None  # 统一的 OpenAI LLM 客户端
         self.logger = get_se_logger(f"operator.{self.get_name()}", emoji="🔧")
 
     def _setup_model(self) -> None:
-        """设置LLM模型实例（复用Aeon generators的模型配置方式）"""
-        if self.model is not None:
+        """设置LLM客户端实例，改用统一的 OpenAI 接口客户端"""
+        if self.llm_client is not None:
             return
 
-        # 使用operator_models配置（如果存在），否则回退到model配置
+        # 使用 operator_models 配置（如果存在），否则回退到 model 配置
         model_config_data = self.config.get("operator_models", self.config.get("model", {}))
-
-        # 创建无成本限制的模型配置（算子不受成本限制）
-        model_config = GenericAPIModelConfig(
-            name=model_config_data.get("name", "anthropic/claude-sonnet-4-20250514"),
-            api_base=model_config_data.get("api_base"),
-            api_key=model_config_data.get("api_key"),
-            max_input_tokens=model_config_data.get("max_input_tokens"),
-            max_output_tokens=model_config_data.get("max_output_tokens"),
-            # 算子无成本限制
-            per_instance_cost_limit=0,
-            total_cost_limit=0,
-            temperature=model_config_data.get("temperature", 0.0),
-            top_p=model_config_data.get("top_p", 1.0),
-        )
-
-        # 创建最小工具配置（禁用函数调用）
-        tools = ToolConfig(commands=[], use_function_calling=False, submit_command="submit")
-
-        self.model = get_model(model_config, tools)
-        self.logger.info(f"LLM模型已初始化: {model_config.name}")
+        # 初始化统一 LLM 客户端
+        self.llm_client = LLMClient(model_config_data)
+        self.logger.info(f"LLM客户端已初始化: {model_config_data.get('name')}")
 
     def _call_llm_api(self, prompt: str, system_prompt: str = "") -> str:
         """
@@ -84,8 +68,27 @@ class BaseOperator(abc.ABC):
         history.append({"role": "user", "content": prompt})
 
         try:
-            response = self.model.query(history)
-            message = response.get("message", "")
+            temp = (
+                self.config.get("operator_models", self.config.get("model", {})).get("temperature", 0.3)
+            )
+            max_out = (
+                self.config.get("operator_models", self.config.get("model", {})).get("max_output_tokens")
+            )
+            # 允许算子或模型配置控制是否启用“思考模式”
+            # 优先从 operator_models 读取，其次回退 model 配置；默认为 None（使用模型默认行为）
+            enable_thinking_cfg = (
+                self.config.get("operator_models", self.config.get("model", {})).get("enable_thinking")
+            )
+
+            message = self.llm_client.call_llm(
+                history,
+                temperature=temp,
+                max_tokens=max_out,
+                enable_thinking=enable_thinking_cfg,
+            )
+            # 按需调用 LLMClient 的清理方法，移除 <think> 标签内容
+            if message:
+                message = self.llm_client.clean_think_tags(message)
             return message if message else ""
         except Exception as e:
             self.logger.error(f"LLM API调用失败: {e}")

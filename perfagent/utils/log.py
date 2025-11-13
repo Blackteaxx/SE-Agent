@@ -10,11 +10,11 @@ def get_se_logger(
     level: int = logging.INFO,
     also_stream: bool = True,
 ) -> logging.Logger:
-    """Create or reuse a logger that writes to a specific file and optionally to the terminal.
+    """Create or reconfigure a logger that writes to a specific file and optionally to the terminal.
 
     - Ensures parent directory exists
-    - Avoids duplicating the same FileHandler for the same file
-    - Adds a single StreamHandler when requested, avoiding duplicates
+    - If the logger already exists, rebind its FileHandler to the requested file when different
+    - Keeps a single StreamHandler (if requested) to avoid duplicates
     - Disables propagate to prevent duplicate logs to root handlers
     """
     logger = logging.getLogger(name)

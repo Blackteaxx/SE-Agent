@@ -1,21 +1,21 @@
 # PerfAgent 配置文件示例（严格使用嵌套结构）
 
 # 迭代控制
-max_iterations: 10
+max_iterations: 3
 early_stop_no_improve: 0
-max_workers: 5  # 批量并发的顶层控制（run_batch 并发度）
+max_workers: 10  # 批量并发的顶层控制（run_batch 并发度）
 
 # 模型配置
 model:
-  name: "openai/minimax/minimax-m2:free"
-  api_base: "https://openrouter.ai/api/v1"
-  api_key: "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"
-  temperature: 0.1
-  max_input_tokens: 10000
+  name: 
+  api_base: 
+  api_key: 
+  temperature: 0.6
+  max_input_tokens: 50000
   max_output_tokens: 10000
   use_llm: false
   # LLM 请求控制与日志开关
-  request_timeout: 60
+  request_timeout: 120
   max_retries: 3
   retry_delay: 1.5
   log_inputs_outputs: true
@@ -29,10 +29,10 @@ optimization:
 
 # 运行时资源限制
 runtime:
-  time_limit: 20   # 每次评估的时间限制（秒）
+  time_limit: 10   # 每次评估的时间限制（秒）
   memory_limit: 1024  # 内存限制（MB）
-  max_workers: 5     # 并发测试的最大工作线程数
-  num_runs: 1        # 性能测试运行次数
+  max_workers: 2     # 并发测试的最大工作线程数
+  num_runs: 5        # 性能测试运行次数
   trim_ratio: 0.1    # 剪裁比例，用于稳健均值
 
 # 轨迹与日志
@@ -69,7 +69,14 @@ prompts:
     Your response MUST follow this exact structure, containing only these two sections:
 
     ### 1. Thinking
-    Provide concise reasoning based on history, metrics, and artifacts.
+    Provide concise reasoning based on history, metrics, and artifacts: 
+    - **Correctness Assessment**: Is the current program producing correct outputs? Any logical errors?
+    - **Context Analysis**: What insights can be drawn from the evolution history, current program and additional requirements?
+    - **Performance Analysis**: What are the main performance bottlenecks based on metrics and artifacts?
+    - **Optimization Opportunities**: Which specific changes could provide substantial improvements?
+    - **Risk Assessment**: How will proposed changes impact correctness and feature dimensions?
+    - **Priority Ranking**: Which improvements should be prioritized for maximum impact?
+
 
     ### 2. Diffs
     Provide improvements using the diff block format specified below. Focus on targeted changes only.

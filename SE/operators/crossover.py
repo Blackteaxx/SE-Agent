@@ -7,8 +7,10 @@ Crossover Operator
 当有效条数不足时，记录错误并跳过处理。
 """
 
+import textwrap
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
 from operators import TemplateOperator
 
 
@@ -33,8 +35,9 @@ class CrossoverOperator(TemplateOperator):
                 
             if isinstance(data, dict) and key.isdigit():
                 # 检查是否有基本的策略信息
-                if data.get('strategy') or data.get('modified_files') or data.get('key_changes'):
-                    valid_iterations.append((key, data))
+                # if data.get('strategy') or data.get('modified_files') or data.get('key_changes'):
+                # 先全部加入，后续再筛选
+                valid_iterations.append((key, data))
         
         # 按迭代号排序
         valid_iterations.sort(key=lambda x: int(x[0]))
@@ -42,80 +45,136 @@ class CrossoverOperator(TemplateOperator):
         return valid_iterations
     
     def _format_trajectory_data(self, iteration_key: str, data: Dict[str, Any]) -> str:
-        """格式化单条轨迹数据"""
-        formatted_parts = []
-        
-        formatted_parts.append(f"ITERATION {iteration_key}:")
-        
-        if data.get('strategy'):
-            formatted_parts.append(f"Strategy: {data['strategy']}")
-        
-        if data.get('strategy_status'):
-            formatted_parts.append(f"Status: {data['strategy_status']}")
-            if data.get('failure_reason'):
-                formatted_parts.append(f"Failure Reason: {data['failure_reason']}")
-        
-        if data.get('modified_files'):
-            formatted_parts.append(f"Modified Files: {', '.join(data['modified_files'])}")
-        
-        if data.get('key_changes'):
-            formatted_parts.append(f"Key Changes: {'; '.join(data['key_changes'])}")
-        
-        if data.get('tools_used'):
-            formatted_parts.append(f"Tools Used: {', '.join(data['tools_used'])}")
-        
-        if data.get('reasoning_pattern'):
-            formatted_parts.append(f"Reasoning Pattern: {data['reasoning_pattern']}")
-        
-        if data.get('assumptions_made'):
-            formatted_parts.append(f"Assumptions: {'; '.join(data['assumptions_made'])}")
-        
-        return "\n".join(formatted_parts)
+        """格式化单条轨迹数据为通用的嵌套文本结构。
+
+        - 保留字典的原始键顺序
+        - 使用两个空格缩进层级
+        - 列表项以 "- " 前缀展示
+        - 多行字符串使用块式缩进
+        - 空值/空列表/空字典跳过
+        """
+
+        def _fmt(value: Any, indent: int) -> str:
+            prefix = "  " * indent
+            # 字典：按原始顺序输出 key: value（或 key: 换行 + 子块）
+            if isinstance(value, dict):
+                lines: List[str] = []
+                for k, v in value.items():
+                    if v is None or v == "" or (isinstance(v, (list, dict)) and len(v) == 0):
+                        continue
+                    # 基本类型单行输出；多行字符串或嵌套结构块式输出
+                    if isinstance(v, (int, float)):
+                        lines.append(f"{prefix}{k}: {v}")
+                    elif isinstance(v, bool):
+                        lines.append(f"{prefix}{k}: {'true' if v else 'false'}")
+                    elif isinstance(v, str) and "\n" not in v:
+                        lines.append(f"{prefix}{k}: {v}")
+                    else:
+                        lines.append(f"{prefix}{k}:")
+                        child = _fmt(v, indent + 1)
+                        if child:
+                            lines.append(child)
+                return "\n".join(lines)
+            # 列表：每个元素一行，以 - 前缀；复杂元素分行缩进
+            if isinstance(value, list):
+                lines: List[str] = []
+                for item in value:
+                    if item is None or item == "":
+                        continue
+                    if isinstance(item, (int, float)):
+                        lines.append(f"{prefix}- {item}")
+                    elif isinstance(item, bool):
+                        lines.append(f"{prefix}- {'true' if item else 'false'}")
+                    elif isinstance(item, str) and "\n" not in item:
+                        lines.append(f"{prefix}- {item}")
+                    else:
+                        child = _fmt(item, indent + 1)
+                        if child:
+                            child_lines = child.splitlines()
+                            if child_lines:
+                                # 去掉子块自身缩进，避免在 "- " 之后产生重复空格
+                                child_prefix = "  " * (indent + 1)
+                                first = child_lines[0]
+                                if first.startswith(child_prefix):
+                                    first = first[len(child_prefix):]
+                                lines.append(f"{prefix}- {first}")
+                                for cl in child_lines[1:]:
+                                    if cl.startswith(child_prefix):
+                                        cl = cl[len(child_prefix):]
+                                    lines.append(f"{prefix}  {cl}")
+                return "\n".join(lines)
+            # 字符串：多行使用块式缩进
+            if isinstance(value, str):
+                if "\n" in value:
+                    return textwrap.indent(value, "  " * indent)
+                return f"{prefix}{value}"
+            # 其他基本类型
+            if isinstance(value, bool):
+                return f"{prefix}{'true' if value else 'false'}"
+            if isinstance(value, (int, float)):
+                return f"{prefix}{value}"
+            return f"{prefix}{str(value)}"
+
+        parts: List[str] = [f"ITERATION {iteration_key}:"]
+        body = _fmt(data, 0)
+        if body:
+            parts.append(body)
+        return "\n".join(parts)
     
-    def _generate_crossover_strategy(self, problem_statement: str, trajectory1: str, trajectory2: str) -> str:
-        """生成交叉策略"""
+    def _generate_crossover_strategy(self, problem_statement: str, trajectory1_summary: str, trajectory2_summary: str) -> str:
+        """
+        针对 PerfAgent 任务，生成一个“交叉”的混合优化策略。
+        (V4 - 自包含描述，消除 T1/T2 代号)
         
-        system_prompt = """You are an expert software engineering strategy consultant specializing in synthesis and optimization. Your task is to analyze two different approaches to a software engineering problem and create a superior hybrid strategy that combines their strengths while avoiding their weaknesses.
-
-You will be given a problem and two different approaches that have been tried. Your job is to:
-1. Identify the strengths and effective elements of each approach
-2. Recognize common pitfalls or limitations shared by both approaches
-3. Synthesize a new strategy that leverages the best aspects of both while addressing their shortcomings
-4. Create an approach that is more robust and comprehensive than either individual strategy
-
-CRITICAL: Your strategy should be a thoughtful synthesis, not just a simple combination. Focus on how the approaches can complement each other and cover each other's blind spots.
-
-IMPORTANT: 
-- Respond with plain text, no formatting
-- Keep response under 250 words for system prompt efficiency
-- Focus on strategic synthesis rather than technical details
-- Provide actionable guidance that builds on both approaches"""
+        Args:
+            problem_statement: 问题的描述。
+            trajectory1_summary: 第一个轨迹的总结。
+            trajectory2_summary: 第二个轨迹的总结。
         
-        prompt = f"""Analyze these two approaches and create a superior hybrid strategy:
+        Returns:
+            一个简短的、综合的混合策略字符串，不包含对原轨迹的直接引用。
+        """
 
-PROBLEM:
-{problem_statement[:400]}...
+        # Persona: 强调“综合”和“清晰传达”
+        # Task: 任务是“合成”并“重述”为一个全新的、独立的策略
+        # Context: 明确指出下游 Agent 看不到原始轨迹，必须自包含
+        # Format: 保持简短、纯文本、面向战略，严禁使用代号
+        system_prompt = """You are an expert algorithmic strategist and performance engineer. Your task is to analyze two different optimization trajectories and synthesize a new *hybrid strategy* that combines their strengths.
 
-APPROACH 1:
-{trajectory1[:600]}...
+    CRITICAL REQUIREMENT: The agent reading your output will NOT have access to the original trajectories (T1, T2). Therefore, your synthesized strategy must be **completely self-contained**.
 
-APPROACH 2:
-{trajectory2[:600]}...
+    DO NOT use references like "T1", "Trajectory 1", "the first approach", etc.
+    INSTEAD, explicitly describe the technique you are adopting.
 
-Create a crossover strategy that:
-1. Combines the most effective elements from both approaches
-2. Addresses the limitations observed in each approach
-3. Covers blind spots that neither approach addressed individually
-4. Provides a more comprehensive and robust solution methodology
+    BAD OUTPUT: "Combine T1's stack logic with T2's I/O."
+    GOOD OUTPUT: "Combine the O(N) monotonic stack algorithm with standard library `sys.stdin.buffer.read()` for fast I/O."
 
-Requirements for the hybrid strategy:
-- Synthesize complementary strengths (e.g., if one approach excels at analysis and another at implementation, combine both)
-- Mitigate shared weaknesses (e.g., if both approaches rush to implementation, emphasize planning)
-- Fill coverage gaps (e.g., if both focus on code but ignore testing, integrate testing)
-- Create synergistic effects where the combination is more powerful than individual parts
+    Your goal is to create a unified, superior strategic directive that stands on its own.
+    """
 
-The strategy should be conceptual yet actionable, providing a framework that an AI agent can follow to achieve better results than either approach alone. Focus on WHY this synthesis is superior and HOW it leverages the best of both worlds while mitigating their individual shortcomings."""
-        
+        # User Prompt: 再次强调“自包含”和“去代号化”
+        prompt = f"""Analyze these two trajectories and create a superior, self-contained hybrid strategy:
+
+    PROBLEM:
+    {textwrap.indent(problem_statement, '  ')}
+
+    TRAJECTORY 1 SUMMARY:
+    {textwrap.indent(trajectory1_summary, '  ')}
+
+    TRAJECTORY 2 SUMMARY:
+    {textwrap.indent(trajectory2_summary, '  ')}
+
+    Create a crossover strategy that synthesizes the best components of both.
+
+    Requirements for the hybrid strategy text:
+    1.  **NO PLACEHOLDERS:** Do not use "T1", "T2", "Approach 1", etc. Explicitly describe every technique you mention.
+    2.  **Synthesize complementary strengths:** e.g., "Use the [specific algorithm from T1] combined with [specific data structure from T2]."
+    3.  **Address shared weaknesses:** If both failed at X, explicitly state "Avoid [technique X] as it led to [failure mode] in previous attempts."
+    4.  **Be directive:** Write it as a clear instruction for the next agent.
+
+    Keep response under 250 words. Ensure it is perfectly readable without knowing the previous trajectories.
+    """
+
         return self._call_llm_api(prompt, system_prompt)
     
     def _generate_content(self, instance_info: Dict[str, Any], problem_statement: str, trajectory_data: Dict[str, Any]) -> str:

@@ -2,7 +2,7 @@
 PerfAgent 批量运行脚本（并行、独立）
 
 目的：
-- 通过并行调用 `run.py` 子进程实现批量运行
+- 通过并行线程直接调用 `run_single_instance` 实现批量运行（不再嵌套子进程）
 - 每个任务将所有目录设置为：配置文件所在目录 / 任务名（文件名）
 - 统一使用 utils.log.get_file_logger 进行批量日志记录
 
@@ -11,20 +11,20 @@ python -m perfagent.run_batch --instances-dir <path> [--config config.yaml] [--o
 """
 
 import argparse
+import copy
 import json
 import logging
 import math
-from datetime import datetime
-import subprocess
-import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-import copy
+from typing import Any
+
 import yaml
 
 from .config import PerfAgentConfig, load_config
+from .run import run_single_instance
 from .utils.log import get_se_logger
 
 
@@ -78,7 +78,7 @@ def _json_safe(obj):
             return "<unserializable>"
 
 
-def _deep_update(dst: Dict[str, Any], src: Dict[str, Any]) -> Dict[str, Any]:
+def _deep_update(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
     """Recursively merge dicts without overwriting nested keys.
 
     - For dict values: merge recursively.
@@ -93,9 +93,7 @@ def _deep_update(dst: Dict[str, Any], src: Dict[str, Any]) -> Dict[str, Any]:
     return dst
 
 
-def _build_task_template_config(
-    templates_root: Optional[Path], task_name: str, logger: logging.Logger
-) -> Dict[str, Any]:
+def _build_task_template_config(templates_root: Path | None, task_name: str, logger: logging.Logger) -> dict[str, Any]:
     """从模板根目录为指定任务读取单一 YAML 文件为 dict。
 
     约定：每个任务只有一个模板文件，位置为：
@@ -114,11 +112,9 @@ def _build_task_template_config(
     yaml_fp = root / f"{task_name}.yaml"
     yml_fp = root / f"{task_name}.yml"
 
-    selected: Optional[Path] = None
+    selected: Path | None = None
     if yaml_fp.exists() and yml_fp.exists():
-        logger.warning(
-            f"任务 {task_name} 的 .yaml 与 .yml 同时存在，优先使用 .yaml，忽略 .yml"
-        )
+        logger.warning(f"任务 {task_name} 的 .yaml 与 .yml 同时存在，优先使用 .yaml，忽略 .yml")
         selected = yaml_fp
     elif yaml_fp.exists():
         selected = yaml_fp
@@ -129,7 +125,7 @@ def _build_task_template_config(
         return {}
 
     try:
-        with open(selected, "r", encoding="utf-8") as f:
+        with open(selected, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         if isinstance(data, dict):
             return data
@@ -141,11 +137,11 @@ def _build_task_template_config(
 
 
 def _create_task_temp_config(
-    base_cfg_template: Dict[str, Any],
-    templates_root: Optional[Path],
+    base_cfg_template: dict[str, Any],
+    templates_root: Path | None,
     task_name: str,
     logger: logging.Logger,
-) -> Tuple[Optional[Path], bool]:
+) -> tuple[Path | None, bool]:
     """基于模板为指定任务创建临时配置文件。
 
     - 读取单一任务模板为 dict（通过 _build_task_template_config）。
@@ -178,50 +174,47 @@ def _create_task_temp_config(
         return None, False
 
 
-def _run_instance_subprocess(
+def _run_instance_direct(
     instance_file: Path,
     config: PerfAgentConfig,
-    config_path: Optional[Path],
+    config_path: Path | None,
     base_dir: Path,
-    per_task_config_path: Optional[Path] = None,
+    per_task_config_path: Path | None = None,
     cleanup_config: bool = False,
-) -> Tuple[str, Dict[str, Any]]:
-    """以子进程运行单个实例，返回 (task_name, result_dict 或 error)。"""
+) -> tuple[str, dict[str, Any]]:
+    """直接在当前进程运行单个实例，返回 (task_name, result_dict 或 error)。"""
     task_name = instance_file.stem
-    # 仅由 run.py 负责在 base_dir 下创建 task_name 子目录并统一日志与轨迹目录
     instance_dir = base_dir / task_name
+    instance_dir.mkdir(parents=True, exist_ok=True)
     output_file = instance_dir / "result.json"
 
-    cmd: List[str] = [
-        sys.executable,
-        "-m",
-        "perfagent.run",
-        "--instance",
-        str(instance_file),
-        "--base-dir",
-        str(base_dir),
-        "--log-level",
-        config.logging.log_level,
-        "--output",
-        str(output_file),
-    ]
-    # 优先使用每任务专属配置，其次使用批量基础配置
-    if per_task_config_path and Path(per_task_config_path).exists():
-        cmd.extend(["--config", str(per_task_config_path)])
-    elif config_path and Path(config_path).exists():
-        cmd.extend(["--config", str(config_path)])
-
+    # 基于 per_task_config_path 或内存配置选择配置
     try:
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if proc.returncode != 0:
-            return task_name, {"error": proc.stderr.strip() or f"Process failed with code {proc.returncode}"}
+        if per_task_config_path and Path(per_task_config_path).exists():
+            # 若存在为当前任务生成的临时配置文件，则优先使用该配置
+            local_config = load_config(per_task_config_path)
+        else:
+            # 否则直接使用已在主流程中应用了 CLI 覆盖项的内存配置，避免丢失 overrides.initial_code_dir
+            local_config = config
+    except Exception as e:
+        return task_name, {"error": f"Failed to load config for task: {e}"}
 
+    # 记录运行配置
+    logging.getLogger("perfagent.run_batch").info(f"任务 {task_name} 运行配置: {local_config}")
+
+    # 运行单实例
+    try:
+        result = run_single_instance(local_config, instance_file, base_dir=base_dir)
+        # 与原子进程行为一致：写出 result.json
         try:
-            with open(output_file, "r", encoding="utf-8") as f:
-                result = json.load(f)
-            return task_name, result
-        except Exception as e:
-            return task_name, {"error": f"Failed to read result: {e}"}
+            with open(output_file, "w", encoding="utf-8") as f:
+                json.dump(_json_safe(result), f, indent=2, ensure_ascii=False)
+        except Exception as we:
+            # 不影响返回，但记录为错误结构
+            return task_name, {"error": f"Failed to write result.json: {we}", "result": result}
+        return task_name, result
+    except Exception as e:
+        return task_name, {"error": str(e)}
     finally:
         if cleanup_config and per_task_config_path:
             try:
@@ -235,10 +228,10 @@ def _run_instance_subprocess(
 def run_batch_instances(
     config: PerfAgentConfig,
     instances_dir: Path,
-    config_path: Optional[Path],
+    config_path: Path | None,
     base_dir: Path,
-    instance_templates_dir: Optional[Path] = None,
-) -> Dict[str, Any]:
+    instance_templates_dir: Path | None = None,
+) -> dict[str, Any]:
     get_se_logger(
         "perfagent.run_batch",
         base_dir / "perfagent.log",
@@ -260,27 +253,28 @@ def run_batch_instances(
     logger.info(f"并发度: max_workers={max_workers}")
 
     # 预读取基础配置（用于生成每任务配置）
+    # 始终使用已加载并应用 CLI 覆盖项的内存配置，避免丢失 overrides.initial_code_dir 等动态覆盖。
     try:
-        if config_path and Path(config_path).exists():
-            with open(config_path, "r", encoding="utf-8") as f:
-                base_cfg_template = yaml.safe_load(f) or {}
-        else:
-            base_cfg_template = config.to_dict()
-    except Exception as e:
-        logger.warning(f"读取基础配置失败，回退使用内存配置: {e}")
         base_cfg_template = config.to_dict()
+    except Exception as e:
+        logger.warning(f"序列化内存配置失败: {e}，尝试回退为空配置")
+        base_cfg_template = {}
 
-    # 不再生成持久化的每任务配置目录，统一使用临时文件
+    # 默认模板目录：优先使用传入参数，其次使用配置中的 prompts.instance_templates_dir
+    templates_root = instance_templates_dir or getattr(getattr(config, "prompts", None), "instance_templates_dir", None)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map = {}
         for f in instance_files:
             task_name = f.stem
-            # 基于 instance_templates_dir 构建每任务临时配置（封装函数）
+            # 基于模板目录构建每任务临时配置（封装函数）
             per_task_cfg, cleanup_cfg = _create_task_temp_config(
-                base_cfg_template, instance_templates_dir, task_name, logger
+                base_cfg_template, templates_root, task_name, logger
             )
-            future = executor.submit(_run_instance_subprocess, f, config, config_path, base_dir, per_task_cfg, cleanup_cfg)
+            # 将 per-task 临时配置路径注入清晰日志，便于调试
+            if per_task_cfg:
+                logger.info(f"任务 {task_name} 使用临时配置: {per_task_cfg}")
+            future = executor.submit(_run_instance_direct, f, config, config_path, base_dir, per_task_cfg, cleanup_cfg)
             future_map[future] = f
         for future in as_completed(future_map):
             inst_file = future_map[future]
@@ -314,6 +308,7 @@ def main():
     parser.add_argument("--base-dir", type=Path, help="基础目录路径，使用实例文件名作为子目录控制")
     parser.add_argument("--max-workers", type=int, help="并发工作线程（顶层配置）")
     parser.add_argument("--instance-templates-dir", type=Path, help="每任务模板根目录（按实例名匹配）")
+    parser.add_argument("--initial-code-dir", type=Path, help="每实例初始代码目录（按实例名匹配文件）")
     args = parser.parse_args()
 
     # 加载并覆盖配置
@@ -359,4 +354,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

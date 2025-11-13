@@ -39,8 +39,11 @@ class LLMClient:
         self.config = model_config
         # 统一使用文件日志（带 emoji），与 IO 日志同目录
         self.io_log_path = Path(io_log_path) if io_log_path else Path("./logs/llm_io.log")
-        get_se_logger("perfagent.llm_client", self.io_log_path, emoji="🤖")
-        self.logger = logging.getLogger("perfagent.llm_client")
+        # Logger 名称增加任务名后缀（取日志目录名），避免并发任务冲突
+        task_suffix = self.io_log_path.parent.name or "default"
+        logger_name = f"perfagent.llm_client.{task_suffix}"
+        get_se_logger(logger_name, self.io_log_path, emoji="🤖", also_stream=False)
+        self.logger = logging.getLogger(logger_name)
         
         # 优先使用配置中的增强参数
         self.max_retries = int(model_config.get("max_retries", max_retries))
@@ -146,10 +149,14 @@ class LLMClient:
 
                 # 使用基本的OpenAI客户端调用，遵循api_test.py的工作模式
                 # 不使用额外参数，避免服务器错误
+                # 禁止思考，仅返回直接回答
                 response = self.client.chat.completions.create(
                     model="/".join(self.config["name"].split("/")[1:]),
                     messages=messages,
                     temperature=temperature,
+                        extra_body={
+                        "chat_template_kwargs": {"enable_thinking": False},
+                    },
                 )
 
                 # 提取响应内容

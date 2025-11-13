@@ -8,6 +8,7 @@ Alternative Strategy Operator
 """
 
 import json
+import textwrap
 from pathlib import Path
 from typing import Any, Dict
 
@@ -26,7 +27,11 @@ class AlternativeStrategyOperator(TemplateOperator):
     # 统一由父类提供 _load_traj_pool，实现复用
 
     def _get_latest_approach(self, approaches_data: Dict[str, Any]) -> str:
-        """获取最近一次失败尝试的详细信息"""
+        """将最近一次尝试的嵌套 dict/list 数据通用格式化为可读文本。
+
+        不依赖固定字段，保持原始键顺序，递归缩进显示；
+        对多行字符串做块状缩进；列表使用 "- " 项标识。
+        """
         if not approaches_data:
             return ""
 
@@ -42,74 +47,155 @@ class AlternativeStrategyOperator(TemplateOperator):
         latest_iteration = max(iteration_nums)
         latest_data = approaches_data.get(str(latest_iteration), {})
 
-        # 格式化最近尝试的信息
-        approach_summary = []
-        approach_summary.append(f"Strategy: {latest_data.get('strategy', 'N/A')}")
+        def indent_str(level: int) -> str:
+            return "  " * level
 
-        # 检查是否为失败实例
-        if latest_data.get("strategy_status") == "FAILED":
-            approach_summary.append(f"STATUS: FAILED - {latest_data.get('failure_reason', 'Unknown failure')}")
+        def fmt_value(val: Any, level: int) -> str:
+            # 基本类型直接转文字
+            if val is None:
+                return "null"
+            if isinstance(val, (int, float)):
+                return str(val)
+            if isinstance(val, bool):
+                return "true" if val else "false"
+            if isinstance(val, str):
+                if "\n" in val:
+                    # 多行字符串块
+                    lines = val.splitlines()
+                    pad = indent_str(level + 1)
+                    return "|\n" + "\n".join(f"{pad}{line}" for line in lines)
+                return val
+            if isinstance(val, dict):
+                # 保持原始顺序
+                lines = []
+                for k, v in val.items():
+                    key_line = f"{indent_str(level)}{k}:"
+                    if isinstance(v, (dict, list)) or (isinstance(v, str) and "\n" in v):
+                        lines.append(key_line)
+                        lines.append(fmt_value(v, level + 1))
+                    else:
+                        lines.append(f"{key_line} {fmt_value(v, 0)}")
+                return "\n".join(lines)
+            if isinstance(val, list):
+                lines = []
+                for item in val:
+                    if isinstance(item, (dict, list)) or (isinstance(item, str) and "\n" in item):
+                        lines.append(f"{indent_str(level)}-")
+                        lines.append(fmt_value(item, level + 1))
+                    else:
+                        lines.append(f"{indent_str(level)}- {fmt_value(item, 0)}")
+                return "\n".join(lines)
+            # 其它类型兜底为字符串
+            return str(val)
 
-        if latest_data.get("modified_files"):
-            approach_summary.append(f"Modified Files: {', '.join(latest_data['modified_files'])}")
+        header = f"Latest Iteration: {latest_iteration}"
+        body = fmt_value(latest_data, 0)
+        return f"{header}\n{body}"
 
-        if latest_data.get("key_changes"):
-            approach_summary.append(f"Key Changes: {'; '.join(latest_data['key_changes'])}")
+    #     def _generate_alternative_strategy(self, problem_statement: str, previous_approach: str) -> str:
+    #         """生成截然不同的替代策略"""
 
-        if latest_data.get("tools_used"):
-            approach_summary.append(f"Tools Used: {', '.join(latest_data['tools_used'])}")
+    #         system_prompt = """You are an expert software engineering strategist specializing in breakthrough problem-solving. Your task is to generate a fundamentally different approach to a software engineering problem, based on analyzing a previous failed attempt.
 
-        if latest_data.get("reasoning_pattern"):
-            approach_summary.append(f"Reasoning Pattern: {latest_data['reasoning_pattern']}")
+    # You will be given a problem and a previous approach that FAILED (possibly due to cost limits, early termination, or strategic inadequacy). Create a completely orthogonal strategy that:
+    # 1. Uses different investigation paradigms (e.g., runtime analysis vs static analysis)
+    # 2. Approaches from unconventional angles (e.g., user impact vs code structure)
+    # 3. Employs alternative tools and techniques
+    # 4. Follows different logical progression
 
-        if latest_data.get("assumptions_made"):
-            approach_summary.append(f"Assumptions: {'; '.join(latest_data['assumptions_made'])}")
+    # CRITICAL: Your strategy must be architecturally dissimilar to avoid the same limitations and blind spots.
 
-        return "\n".join(approach_summary)
+    # SPECIAL FOCUS: If the previous approach failed due to early termination or cost limits, prioritize:
+    # - More focused, direct approaches
+    # - Faster problem identification techniques
+    # - Incremental validation methods
+    # - Minimal viable change strategies
+
+    # IMPORTANT:
+    # - Respond with plain text, no formatting
+    # - Keep response under 200 words for system prompt efficiency
+    # - Focus on cognitive framework rather than code specifics
+    # - Provide actionable strategic guidance"""
+
+    #         prompt = f"""Generate a radically different solution strategy:
+
+    # PROBLEM:
+    # {problem_statement}...
+
+    # PREVIOUS FAILED APPROACH:
+    # {previous_approach}...
+
+    # Requirements for alternative strategy:
+    # 1. Adopt different investigation paradigm (e.g., empirical vs theoretical)
+    # 2. Start from alternative entry point (e.g., dependencies vs core logic)
+    # 3. Use non-linear logical sequence (e.g., symptom-to-cause vs cause-to-symptom)
+    # 4. Integrate unconventional techniques (e.g., profiling, fuzzing, visualization)
+    # 5. Prioritize overlooked aspects (e.g., performance, edge cases, integration)
+
+    # Provide a concise strategic framework that enables an AI agent to approach this problem through an entirely different methodology. Focus on WHY this approach differs and HOW it circumvents previous limitations.
+
+    # Keep response under 200 words."""
 
     def _generate_alternative_strategy(self, problem_statement: str, previous_approach: str) -> str:
-        """生成截然不同的替代策略"""
+        """
+        针对 PerfAgent 任务，生成一个截然不同的替代优化策略，用于探索多样性。
+        (V3 - 专注于多样性，而非失败)
 
-        system_prompt = """You are an expert software engineering strategist specializing in breakthrough problem-solving. Your task is to generate a fundamentally different approach to a software engineering problem, based on analyzing a previous failed attempt.
+        Args:
+            problem_statement: 问题的描述。
+            previous_approach_summary: 之前轨迹的总结 (e.g., "Iter 1: Correct O(N) stack, 1.07s...")
+                                    这个解不一定是错的。
 
-You will be given a problem and a previous approach that FAILED (possibly due to cost limits, early termination, or strategic inadequacy). Create a completely orthogonal strategy that:
-1. Uses different investigation paradigms (e.g., runtime analysis vs static analysis)
-2. Approaches from unconventional angles (e.g., user impact vs code structure)
-3. Employs alternative tools and techniques
-4. Follows different logical progression
+        Returns:
+            一个简短的、截然不同的策略字符串。
+        """
 
-CRITICAL: Your strategy must be architecturally dissimilar to avoid the same limitations and blind spots.
+        # Persona: 强调创造力和“跳出思维定式”
+        # Task: 任务是基于“现有”的解来生成“不同”的策略
+        # Context: 明确指出“现有解”可能是好的，我们的目标是多样性
+        # Format: 保持简短、纯文本、面向战略
+        system_prompt = """You are an expert algorithmic strategist and performance engineer, specializing in creative, out-of-the-box problem-solving and code optimization. Your task is to generate a fundamentally different *optimization strategy* for a code efficiency problem, based on analyzing a previous, existing solution.
 
-SPECIAL FOCUS: If the previous approach failed due to early termination or cost limits, prioritize:
-- More focused, direct approaches
-- Faster problem identification techniques
-- Incremental validation methods
-- Minimal viable change strategies
+    You will be given a problem and a summary of a previous trajectory. This previous solution might be correct, incorrect, fast, or slow. Your task is **not** to fix it, but to provide a **completely different path** to a solution.
 
-IMPORTANT: 
-- Respond with plain text, no formatting
-- Keep response under 200 words for system prompt efficiency
-- Focus on cognitive framework rather than code specifics
-- Provide actionable strategic guidance"""
+    Your goal is to create a completely *orthogonal* strategy to explore a different part of the solution space.
+    1.  Focus on a different bottleneck (e.g., I/O and parsing vs. core computation).
+    2.  Use a different algorithmic paradigm (e.g., Greedy vs. Dynamic Programming).
+    3.  Employ alternative data structures (e.g., `list` stack vs. `deque` vs. `heapq`).
 
-        prompt = f"""Generate a radically different solution strategy:
+    CRITICAL: Your strategy must be *algorithmically* dissimilar. A simple micro-optimization or bugfix of the previous approach is **not** an acceptable answer.
 
-PROBLEM:
-{problem_statement[:400]}...
+    SPECIAL FOCUS:
+    -   If the previous approach focused on **algorithmic optimization** (e.g., stack logic), propose a strategy that focuses on **I/O optimization** (e.g., custom byte parsing).
+    -   If the previous approach focused on **I/O**, propose a different **core algorithm** or **data structure**.
+    -   If the previous approach was `O(N log N)`, explore if an `O(N)` solution is possible.
+    -   The goal is **strategic diversity**, not incremental improvement.
 
-PREVIOUS FAILED APPROACH:
-{previous_approach[:600]}...
+    IMPORTANT:
+    -   Respond with plain text, no formatting.
+    -   Keep response under 200 words for system prompt efficiency.
+    -   Focus on the strategic shift (the 'what' and 'why'), not specific code.
+    -   Provide actionable strategic guidance for an AI agent.
+    """
 
-Requirements for alternative strategy:
-1. Adopt different investigation paradigm (e.g., empirical vs theoretical)
-2. Start from alternative entry point (e.g., dependencies vs core logic)
-3. Use non-linear logical sequence (e.g., symptom-to-cause vs cause-to-symptom)
-4. Integrate unconventional techniques (e.g., profiling, fuzzing, visualization)
-5. Prioritize overlooked aspects (e.g., performance, edge cases, integration)
+        # User Prompt: 明确要求“非增量”和“定性不同”
+        prompt = f"""Generate a radically different solution strategy for exploration:
 
-Provide a concise strategic framework that enables an AI agent to approach this problem through an entirely different methodology. Focus on WHY this approach differs and HOW it circumvents previous limitations.
+    PROBLEM:
+    {textwrap.indent(problem_statement, "  ")}
 
-Keep response under 200 words."""
+    PREVIOUS (EXISTING) STRATEGY SUMMARY:
+    {textwrap.indent(previous_approach, "  ")}
+
+    Requirements for new alternative strategy:
+    1.  Must **not** be an incremental refinement of the previous strategy (e.g., no simple bugfixes or micro-optimizations).
+    2.  Must be a *qualitatively different* approach (e.g., different algorithm, different data structure, or different optimization bottleneck).
+    3.  Explore alternative bottlenecks (e.g., algorithm vs. I/O parsing).
+
+    Provide a concise strategic framework that enables an AI agent to approach this problem through an entirely different optimization methodology. Focus on WHY this approach is *different* and what new trade-offs (e.g., simpler code vs. faster runtime, different Big-O) it explores.
+
+    Keep response under 200 words.
+    """
 
         return self._call_llm_api(prompt, system_prompt)
 
@@ -127,13 +213,13 @@ Keep response under 200 words."""
             self.logger.warning(f"跳过 {instance_name}: 无轨迹池数据")
             return ""
 
-        # 获取最近一次失败尝试
+        # 获取最近一次尝试
         latest_approach = self._get_latest_approach(approaches_data)
         if not latest_approach:
-            self.logger.warning(f"跳过 {instance_name}: 无最近失败尝试数据")
+            self.logger.warning(f"跳过 {instance_name}: 无最近尝试数据")
             return ""
 
-        self.logger.info(f"分析 {instance_name}: 基于最近失败尝试生成替代策略")
+        self.logger.info(f"分析 {instance_name}: 基于最近尝试生成替代策略")
 
         # 生成替代策略
         strategy = self._generate_alternative_strategy(problem_statement, latest_approach)

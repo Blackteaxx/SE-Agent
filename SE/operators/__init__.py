@@ -7,13 +7,7 @@ SE Operators Package
 """
 
 from .base import BaseOperator, TemplateOperator, EnhanceOperator
-from .registry import (
-    register_operator, 
-    get_operator_class, 
-    create_operator, 
-    list_operators,
-    get_registry
-)
+from .registry import register_operator, get_operator_class, create_operator, list_operators, get_registry
 
 # 导入具体算子实现
 from .traj_pool_summary import TrajPoolSummaryOperator
@@ -26,16 +20,16 @@ from .crossover import CrossoverOperator
 # from .summary_bug import SummaryBugOperator
 
 __all__ = [
-    'BaseOperator',
-    'TemplateOperator', 
-    'EnhanceOperator',
-    'register_operator',
-    'get_operator_class',
-    'create_operator',
-    'list_operators',
-    'get_registry',
-    'TrajPoolSummaryOperator',
-    'AlternativeStrategyOperator',
-    'TrajectoryAnalyzerOperator',
-    'CrossoverOperator'
+    "BaseOperator",
+    "TemplateOperator",
+    "EnhanceOperator",
+    "register_operator",
+    "get_operator_class",
+    "create_operator",
+    "list_operators",
+    "get_registry",
+    "TrajPoolSummaryOperator",
+    "AlternativeStrategyOperator",
+    "TrajectoryAnalyzerOperator",
+    "CrossoverOperator",
 ]

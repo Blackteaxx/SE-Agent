@@ -78,6 +78,18 @@ class LanguageConfig:
 
 
 @dataclass
+class OverridesConfig:
+    """可选的覆盖项配置
+
+    - initial_code_dir: 指定每实例初始代码的目录（按实例名匹配文件）
+    - initial_code_text: 直接提供初始代码文本（优先于目录）
+    """
+
+    initial_code_dir: Optional[Path] = None
+    initial_code_text: Optional[str] = None
+
+
+@dataclass
 class PerfAgentConfig:
     """PerfAgent 配置类（模块化集成）"""
 
@@ -95,6 +107,7 @@ class PerfAgentConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     prompts: PromptConfig = field(default_factory=PromptConfig)
     language_cfg: LanguageConfig = field(default_factory=LanguageConfig)
+    overrides: OverridesConfig = field(default_factory=OverridesConfig)
 
     def __post_init__(self):
         """初始化后处理，将旧字段同步到新组件，并验证目录与模板"""
@@ -167,6 +180,12 @@ class PerfAgentConfig:
             if isinstance(itd, (str, Path)):
                 self.prompts.instance_templates_dir = Path(itd)
 
+        # 初始代码目录（按实例名匹配），规范化为 Path
+        if getattr(args, "initial_code_dir", None) is not None and self.overrides is not None:
+            icd = args.initial_code_dir
+            if isinstance(icd, (str, Path)):
+                self.overrides.initial_code_dir = Path(icd)
+
     def _validate_config(self):
         """验证配置参数"""
         if self.max_iterations < 0:
@@ -196,6 +215,11 @@ class PerfAgentConfig:
             if isinstance(itd, Path):
                 data["prompts"]["instance_templates_dir"] = str(itd)
             # additional_requirements 为普通字符串，无需特殊处理
+        # 处理 overrides 中的 Path 字段
+        if "overrides" in data and isinstance(data["overrides"], dict):
+            icd = data["overrides"].get("initial_code_dir")
+            if isinstance(icd, Path):
+                data["overrides"]["initial_code_dir"] = str(icd)
         return data
 
     @classmethod
@@ -234,6 +258,12 @@ class PerfAgentConfig:
         language_dict = cfg.get("language_cfg", {}) or {}
         language_cfg = LanguageConfig(**language_dict)
 
+        # overrides（可选嵌套）
+        overrides_dict = cfg.get("overrides", {}) or {}
+        if "initial_code_dir" in overrides_dict and isinstance(overrides_dict["initial_code_dir"], str):
+            overrides_dict["initial_code_dir"] = Path(overrides_dict["initial_code_dir"])
+        overrides_cfg = OverridesConfig(**overrides_dict)
+
         # 顶层允许的键
         max_iterations = cfg.get("max_iterations", 10)
         early_stop_no_improve = cfg.get("early_stop_no_improve", 0)
@@ -249,6 +279,7 @@ class PerfAgentConfig:
             language_cfg=language_cfg,
             early_stop_no_improve=early_stop_no_improve,
             max_workers=max_workers,
+            overrides=overrides_cfg,
         )
 
     @classmethod

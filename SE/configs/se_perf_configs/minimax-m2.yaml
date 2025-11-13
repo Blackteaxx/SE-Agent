@@ -6,7 +6,7 @@
 model:
   name: "openai/minimax/minimax-m2:free"
   api_base: "https://openrouter.ai/api/v1"
-  api_key: "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"
+  api_key: "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"
   max_input_tokens: 128000
   max_output_tokens: 64000
   per_instance_cost_limit: 0
@@ -16,7 +16,7 @@ model:
 operator_models:
   name: "openai/minimax/minimax-m2:free"
   api_base: "https://openrouter.ai/api/v1"
-  api_key: "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"
+  api_key: "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"
   max_input_tokens: 128000
   max_output_tokens: 64000
 
@@ -30,16 +30,16 @@ suffix: "specific_instances"
 num_workers: 5
 
 # 基础配置引用 (从base_configs目录)
-base_config: "/mnt/d/workspace/SE-Agent/SE/configs/perf_configs/config_example.yaml"
+base_config: "/data/CodeEfficiency/SE-Agent/SE/configs/perf_configs/config_example.yaml"
 
 # 策略编排
 strategy:
   iterations:
-    - perf_base_config: "/mnt/d/workspace/SE-Agent/SE/configs/perf_configs/config_example.yaml"
+    - perf_base_config: "/data/CodeEfficiency/SE-Agent/SE/configs/perf_configs/config_example.yaml"
       operator: null
-    - perf_base_config: "/mnt/d/workspace/SE-Agent/SE/configs/perf_configs/config_example.yaml"
+    - perf_base_config: "/data/CodeEfficiency/SE-Agent/SE/configs/perf_configs/config_example.yaml"
       operator: "alternative_strategy"
-    - perf_base_config: "/mnt/d/workspace/SE-Agent/SE/configs/perf_configs/config_example.yaml"
+    - perf_base_config: "/data/CodeEfficiency/SE-Agent/SE/configs/perf_configs/config_example.yaml"
       operator: "crossover"
-    - perf_base_config: "/mnt/d/workspace/SE-Agent/SE/configs/perf_configs/config_example.yaml"
+    - perf_base_config: "/data/CodeEfficiency/SE-Agent/SE/configs/perf_configs/config_example.yaml"
       operator: "traj_pool_summary"
