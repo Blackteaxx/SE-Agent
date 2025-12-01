@@ -152,6 +152,9 @@ prompts:
     ## Current Artifacts
     {current_artifacts_section}
 
+  include_all_history: false
+
+
 
 # 语言配置
 language_cfg:
@@ -162,3 +165,4 @@ language_cfg:
     - "java"
     - "javascript"
     - "golang"
+

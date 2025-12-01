@@ -4,7 +4,7 @@ import numpy as np
 import scipy.stats as st
 
 
-def analyze_runtimes(
+def analyze_samples(
     samples: List[float],
     confidence: float = 0.95,
     trim_ratio: float = 0.05,
@@ -65,7 +65,7 @@ def analyze_runtimes(
     IQR = Q3 - Q1
     lower_bound = Q1 - iqr_k * IQR
     upper_bound = Q3 + iqr_k * IQR
-    
+
     filtered_samples = samples_np[(samples_np >= lower_bound) & (samples_np <= upper_bound)]
 
     if len(filtered_samples) == 0:
@@ -80,7 +80,7 @@ def analyze_runtimes(
             "95%_CI": (float("inf"), float("inf")),
             "trimmed_mean": float("inf"),
         }
-    
+
     samples_np = filtered_samples
 
     mean = samples_np.mean()
@@ -92,9 +92,7 @@ def analyze_runtimes(
     # Confidence Interval
     ci_low, ci_high = float("inf"), float("inf")
     if len(samples_np) > 1:
-        ci_low, ci_high = st.t.interval(
-            confidence, df=len(samples_np) - 1, loc=mean, scale=st.sem(samples_np)
-        )
+        ci_low, ci_high = st.t.interval(confidence, df=len(samples_np) - 1, loc=mean, scale=st.sem(samples_np))
 
     # Trimmed mean on filtered data
     sorted_samples = np.sort(samples_np)

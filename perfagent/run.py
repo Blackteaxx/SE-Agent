@@ -38,11 +38,7 @@ def run_single_instance(
     """运行单个实例的优化"""
     # 初始绑定主日志器到 base_dir（或配置的 log_dir），后续在实例目录内绑定专属文件日志器
     try:
-        pre_log_path = (
-            Path(base_dir) / "perfagent.log"
-            if base_dir
-            else Path(config.logging.log_dir) / "perfagent.log"
-        )
+        pre_log_path = Path(base_dir) / "perfagent.log" if base_dir else Path(config.logging.log_dir) / "perfagent.log"
         get_se_logger(
             "perfagent.run_single.main",
             pre_log_path,
@@ -144,7 +140,8 @@ def run_single_instance(
                 with open(traj_path, "r", encoding="utf-8") as tf:
                     traj_json = json.load(tf)
                 info = traj_json.get("info") or traj_json.get("metadata") or {}
-                submission_code = info.get("submission", "")
+                # 优先使用轨迹中的最终最佳代码；若缺失则回退到 submission
+                submission_code = info.get("final_best_code") or info.get("submission", "")
             pred_file = instance_output_dir / f"{task_name}.pred"
             with open(pred_file, "w", encoding="utf-8") as pf:
                 pf.write(submission_code or "")

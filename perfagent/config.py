@@ -7,7 +7,7 @@ PerfAgent 配置系统
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import yaml
 
@@ -37,9 +37,10 @@ class ModelConfig:
 class OptimizationConfig:
     """优化方向配置"""
 
-    target: str = "runtime"  # 允许: "runtime" 或 "memory"
+    target: Literal["runtime", "memory", "integral"] = "runtime"  # 允许: "runtime" 或 "memory" 或 "integral"
     enable_memory_checks: bool = True
     enable_runtime_checks: bool = True
+    adopt_only_if_improved: bool = False
 
 
 @dataclass
@@ -69,6 +70,7 @@ class PromptConfig:
     additional_requirements: Optional[str] = None
     # 实例系统模板附加内容目录（包含若干 YAML 文件）（兼容旧流程）
     instance_templates_dir: Optional[Path] = None
+    include_all_history: bool = False
 
 
 @dataclass
@@ -197,8 +199,8 @@ class PerfAgentConfig:
         if self.runtime.num_runs < 1:
             raise ValueError("runtime.num_runs must be at least 1")
         # 优化方向校验
-        if self.optimization.target not in ("runtime", "memory"):
-            raise ValueError("optimization.target must be 'runtime' or 'memory'")
+        if self.optimization.target not in ("runtime", "memory", "integral"):
+            raise ValueError("optimization.target must be 'runtime' or 'memory' or 'integral'")
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典（嵌套组件序列化，并处理 Path）"""
@@ -229,6 +231,14 @@ class PerfAgentConfig:
 
         # model（仅从嵌套 model 读取）
         model_dict = cfg.get("model", {}) or {}
+        # 兼容迁移：若旧配置在 model.include_all_history，则迁移到 prompts.include_all_history
+        prompts_dict_migration = cfg.get("prompts", {}) or {}
+        if "include_all_history" in model_dict and "include_all_history" not in prompts_dict_migration:
+            try:
+                prompts_dict_migration["include_all_history"] = bool(model_dict.pop("include_all_history"))
+                cfg["prompts"] = prompts_dict_migration
+            except Exception:
+                model_dict.pop("include_all_history", None)
         model_cfg = ModelConfig(**model_dict)
 
         # runtime（仅从嵌套 runtime 读取）

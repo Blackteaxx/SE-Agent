@@ -200,7 +200,11 @@ def _run_instance_direct(
         return task_name, {"error": f"Failed to load config for task: {e}"}
 
     # 记录运行配置
-    logging.getLogger("perfagent.run_batch").info(f"任务 {task_name} 运行配置: {local_config}")
+    try:
+        cfg_json = json.dumps(local_config.to_dict(), ensure_ascii=False, indent=2)
+    except Exception:
+        cfg_json = str(local_config)
+    logging.getLogger("perfagent.run_batch").info(f"任务 {task_name} 运行配置:\n{cfg_json}")
 
     # 运行单实例
     try:
@@ -268,9 +272,7 @@ def run_batch_instances(
         for f in instance_files:
             task_name = f.stem
             # 基于模板目录构建每任务临时配置（封装函数）
-            per_task_cfg, cleanup_cfg = _create_task_temp_config(
-                base_cfg_template, templates_root, task_name, logger
-            )
+            per_task_cfg, cleanup_cfg = _create_task_temp_config(base_cfg_template, templates_root, task_name, logger)
             # 将 per-task 临时配置路径注入清晰日志，便于调试
             if per_task_cfg:
                 logger.info(f"任务 {task_name} 使用临时配置: {per_task_cfg}")

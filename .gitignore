@@ -117,7 +117,6 @@ preds
 SE/trajectories/*
 
 # 数据文件
-SE/trajectories_perf/*
-SE/instances/EffiBench-X/*
-SE_swe/
-SE/configs/*
+trajectories_perf/*
+instances/
+configs/*

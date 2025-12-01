@@ -131,6 +131,7 @@ class PerfAgent:
 
         # 优化历史
         self.optimization_history: list[dict[str, Any]] = []
+
         # 初始代码来源："default" | "text" | "dir"
         self._initial_code_source: str = "default"
 
@@ -169,7 +170,7 @@ class PerfAgent:
         优先级：
         1) 配置 overrides.initial_code_text（直接文本）
         2) 配置 overrides.initial_code_dir（按实例名匹配文件）
-        3) 默认占位符
+        3) 默认占位符代码（根据语言）
         """
         try:
             # 默认来源
@@ -236,19 +237,50 @@ class PerfAgent:
 
         # 如果代码与占位符代码相同，返回默认失败结构
         if code == self._get_default_placeholder(language):
-            analysis_results = {
+            perf = {
                 "original_n": 0,
                 "n": 0,
-                "mean": float("inf"),
-                "std": float("inf"),
-                "min": float("inf"),
-                "max": float("inf"),
-                "max_diff": float("inf"),
-                "95%_CI": (float("inf"), float("inf")),
-                "trimmed_mean": float("inf"),
+                "runtime": float("inf"),
+                "memory": float("inf"),
+                "integral": float("inf"),
+                "analysis": {
+                    "runtime": {
+                        "original_n": 0,
+                        "n": 0,
+                        "mean": float("inf"),
+                        "std": float("inf"),
+                        "min": float("inf"),
+                        "max": float("inf"),
+                        "max_diff": float("inf"),
+                        "95%_CI": (float("inf"), float("inf")),
+                        "trimmed_mean": float("inf"),
+                    },
+                    "memory": {
+                        "original_n": 0,
+                        "n": 0,
+                        "mean": float("inf"),
+                        "std": float("inf"),
+                        "min": float("inf"),
+                        "max": float("inf"),
+                        "max_diff": float("inf"),
+                        "95%_CI": (float("inf"), float("inf")),
+                        "trimmed_mean": float("inf"),
+                    },
+                    "integral": {
+                        "original_n": 0,
+                        "n": 0,
+                        "mean": float("inf"),
+                        "std": float("inf"),
+                        "min": float("inf"),
+                        "max": float("inf"),
+                        "max_diff": float("inf"),
+                        "95%_CI": (float("inf"), float("inf")),
+                        "trimmed_mean": float("inf"),
+                    },
+                },
             }
             return {
-                "performance_analysis": analysis_results,
+                "performance_analysis": perf,
                 "first_run_details": [],
                 "failed_submission_exit_codes": [],
                 "pass_rates": [],
@@ -259,19 +291,50 @@ class PerfAgent:
         evaluator = getattr(instance, "evaluator", None)
         tc_valid = bool(test_cases) and isinstance(test_cases, list) and isinstance(test_cases[0], dict)
         if not evaluator or not tc_valid:
-            analysis_results = {
+            perf = {
                 "original_n": 0,
                 "n": 0,
-                "mean": float("inf"),
-                "std": float("inf"),
-                "min": float("inf"),
-                "max": float("inf"),
-                "max_diff": float("inf"),
-                "95%_CI": (float("inf"), float("inf")),
-                "trimmed_mean": float("inf"),
+                "runtime": float("inf"),
+                "memory": float("inf"),
+                "integral": float("inf"),
+                "analysis": {
+                    "runtime": {
+                        "original_n": 0,
+                        "n": 0,
+                        "mean": float("inf"),
+                        "std": float("inf"),
+                        "min": float("inf"),
+                        "max": float("inf"),
+                        "max_diff": float("inf"),
+                        "95%_CI": (float("inf"), float("inf")),
+                        "trimmed_mean": float("inf"),
+                    },
+                    "memory": {
+                        "original_n": 0,
+                        "n": 0,
+                        "mean": float("inf"),
+                        "std": float("inf"),
+                        "min": float("inf"),
+                        "max": float("inf"),
+                        "max_diff": float("inf"),
+                        "95%_CI": (float("inf"), float("inf")),
+                        "trimmed_mean": float("inf"),
+                    },
+                    "integral": {
+                        "original_n": 0,
+                        "n": 0,
+                        "mean": float("inf"),
+                        "std": float("inf"),
+                        "min": float("inf"),
+                        "max": float("inf"),
+                        "max_diff": float("inf"),
+                        "95%_CI": (float("inf"), float("inf")),
+                        "trimmed_mean": float("inf"),
+                    },
+                },
             }
             return {
-                "performance_analysis": analysis_results,
+                "performance_analysis": perf,
                 "first_run_details": [],
                 "failed_test_details": [],
                 "failed_submission_exit_codes": [],
@@ -295,19 +358,50 @@ class PerfAgent:
         except Exception as e:
             # 单次运行失败则回退到默认失败结构，保持与现有测试兼容
             self.logger.warning(f"单次运行评估失败，返回默认性能结构: {e}")
-            analysis_results = {
+            perf = {
                 "original_n": 0,
                 "n": 0,
-                "mean": float("inf"),
-                "std": float("inf"),
-                "min": float("inf"),
-                "max": float("inf"),
-                "max_diff": float("inf"),
-                "95%_CI": (float("inf"), float("inf")),
-                "trimmed_mean": float("inf"),
+                "runtime": float("inf"),
+                "memory": float("inf"),
+                "integral": float("inf"),
+                "analysis": {
+                    "runtime": {
+                        "original_n": 0,
+                        "n": 0,
+                        "mean": float("inf"),
+                        "std": float("inf"),
+                        "min": float("inf"),
+                        "max": float("inf"),
+                        "max_diff": float("inf"),
+                        "95%_CI": (float("inf"), float("inf")),
+                        "trimmed_mean": float("inf"),
+                    },
+                    "memory": {
+                        "original_n": 0,
+                        "n": 0,
+                        "mean": float("inf"),
+                        "std": float("inf"),
+                        "min": float("inf"),
+                        "max": float("inf"),
+                        "max_diff": float("inf"),
+                        "95%_CI": (float("inf"), float("inf")),
+                        "trimmed_mean": float("inf"),
+                    },
+                    "integral": {
+                        "original_n": 0,
+                        "n": 0,
+                        "mean": float("inf"),
+                        "std": float("inf"),
+                        "min": float("inf"),
+                        "max": float("inf"),
+                        "max_diff": float("inf"),
+                        "95%_CI": (float("inf"), float("inf")),
+                        "trimmed_mean": float("inf"),
+                    },
+                },
             }
             return {
-                "performance_analysis": analysis_results,
+                "performance_analysis": perf,
                 "first_run_details": [],
                 "failed_test_details": [],
                 "pass_rates": [],
@@ -430,8 +524,26 @@ class PerfAgent:
                 code_snapshot=current_code,
             )
 
-            if initial_evaluation_summary["performance_analysis"].get("trimmed_mean", float("inf")) < best_performance:
-                best_performance = initial_evaluation_summary["performance_analysis"]["trimmed_mean"]
+            def _extract_pass_rate(results: dict[str, Any]) -> float:
+                pr_list = results.get("pass_rates") or []
+                try:
+                    if isinstance(pr_list, list) and pr_list:
+                        return float(min(float(p) for p in pr_list))
+                except Exception:
+                    pass
+                try:
+                    fr = results.get("first_run_details") or []
+                    total = len(fr)
+                    passed = sum(1 for tc in fr if tc.get("passed", False))
+                    return (passed / total) if total > 0 else 0.0
+                except Exception:
+                    return 0.0
+
+            best_pass_rate = _extract_pass_rate(initial_performance)
+            target = self.config.optimization.target
+            init_metric = initial_evaluation_summary["performance_analysis"].get(target, float("inf"))
+            if init_metric < best_performance:
+                best_performance = init_metric
                 best_code = current_code
 
             # 记录当前代码对应的最新评估结果（用于提示构造）
@@ -535,9 +647,11 @@ class PerfAgent:
                         self.logger.info("开始评估优化后的代码性能")
                         performance_result = self._evaluate_performance(language, optimized_code, test_cases, inst)
 
+                        target = self.config.optimization.target
                         current_performance = performance_result.get("performance_analysis", {}).get(
-                            "trimmed_mean", float("inf")
+                            target, float("inf")
                         )
+                        current_pass_rate = _extract_pass_rate(performance_result)
 
                         # 仅保留核心评估结果
                         evaluation_summary = {
@@ -556,29 +670,58 @@ class PerfAgent:
                                 "performance_after": current_performance,
                                 "improvement": best_performance - current_performance,
                                 # 强制转换为 Python bool，避免 numpy.bool_ 导致 JSON 序列化错误
-                                "success": bool(current_performance < best_performance),
+                                "success": bool(
+                                    (current_pass_rate > best_pass_rate)
+                                    or (
+                                        current_pass_rate == best_pass_rate
+                                        and current_pass_rate == 1.0
+                                        and current_performance < best_performance
+                                    )
+                                ),
                             }
                         )
 
-                        # 更新最佳结果
-                        if current_performance < best_performance:
+                        improved = False
+                        if current_pass_rate > best_pass_rate:
+                            improved = True
+                        elif (
+                            current_pass_rate == best_pass_rate
+                            and current_pass_rate == 1.0
+                            and current_performance < best_performance
+                        ):
+                            improved = True
+
+                        if improved:
+                            best_pass_rate = current_pass_rate
                             best_performance = current_performance
                             best_code = optimized_code
-                            self.logger.info(f"性能改进: {current_performance:.4f}")
+                            self.logger.info(
+                                f"采用更优代码: pass_rate {best_pass_rate:.2f}, {target} {best_performance:.4f}"
+                            )
                             no_improve_count = 0
                         else:
-                            self.logger.info(f"性能未改进: {current_performance:.4f} vs {best_performance:.4f}")
+                            self.logger.info(
+                                f"未改进: pass_rate {current_pass_rate:.2f} vs {best_pass_rate:.2f}; {target} {current_performance:.4f} vs {best_performance:.4f}"
+                            )
                             no_improve_count += 1
 
-                        # 无论是否改进，都更新 current_code
-                        current_code = optimized_code
+                        # 根据配置决定是否采用优化后的代码作为下一轮基础
+                        if self.config.optimization.adopt_only_if_improved:
+                            if improved:
+                                current_code = optimized_code
+                            else:
+                                current_code = best_code
+                        else:
+                            current_code = optimized_code
                         # 更新最新评估结果，供下一轮提示生成使用
                         current_benchmark_results = performance_result
 
-                        # 在决定是否采用后，记录步骤结束及当前代码快照
+                        adopted = True
+                        if self.config.optimization.adopt_only_if_improved:
+                            adopted = improved
                         summary_text = self._build_summary_text(
                             iteration=iteration + 1 + iter_offset,
-                            code_changed=True,
+                            code_changed=adopted,
                             diff_text=diff_text,
                             benchmark_results=performance_result,
                             current_program=current_code,
@@ -586,8 +729,8 @@ class PerfAgent:
                         trajectory.end_step(
                             step_id,
                             response=optimization_response,
-                            thought="应用 diff 并完成性能评估",
-                            code_changed=True,
+                            thought=("应用 diff 并完成性能评估" if adopted else "评估未改进，未采用优化"),
+                            code_changed=adopted,
                             diff=diff_text,
                             performance_metrics=evaluation_summary,
                             code_snapshot=current_code,
@@ -645,7 +788,8 @@ class PerfAgent:
 
             # 完成优化
             # 计算 success 时确保参与比较的值为原生 Python 类型
-            initial_trimmed = initial_performance.get("performance_analysis", {}).get("trimmed_mean", float("inf"))
+            target = self.config.optimization.target
+            initial_trimmed = initial_performance.get("performance_analysis", {}).get(target, float("inf"))
             try:
                 item_fn = getattr(initial_trimmed, "item", None)
                 if callable(item_fn):
@@ -686,8 +830,11 @@ class PerfAgent:
                 "success": bool(best_performance < initial_trimmed),
             }
 
+            # 记录最终轨迹
             trajectory_file = trajectory.finalize(
-                success=final_result["success"], final_performance={"trimmed_mean": best_performance}
+                success=final_result["success"],
+                final_performance={"target": self.config.optimization.target, "trimmed_mean": best_performance},
+                final_submission_code=best_code,
             )
 
             final_result["trajectory_file"] = trajectory_file
@@ -696,7 +843,10 @@ class PerfAgent:
 
         except Exception as e:
             self.logger.error(f"优化过程失败: {e}")
-            trajectory.finalize(success=False, error_message=str(e))
+            try:
+                trajectory.finalize(success=False, error_message=str(e), final_submission_code=best_code)
+            except Exception:
+                trajectory.finalize(success=False, error_message=str(e), final_submission_code=None)
             raise
 
     def _build_optimization_prompt(
@@ -756,7 +906,9 @@ class PerfAgent:
         failed_test_details = benchmark_results.get("failed_test_details", []) or []
 
         # 失败情况：汇总失败信息并返回错误指标
-        if failed_test_details or performance_metrics.get("trimmed_mean", float("inf")) == float("inf"):
+        target = self.config.optimization.target
+        target_value = performance_metrics.get(target, float("inf"))
+        if failed_test_details or target_value == float("inf"):
             num_failed = len(failed_test_details)
             num_total = len(benchmark_results.get("first_run_details", []))
             pass_rate = (num_total - num_failed) / num_total if num_total > 0 else 0
@@ -787,7 +939,8 @@ class PerfAgent:
 
             metrics = {
                 "pass_rate": pass_rate,
-                "trimmed_mean_runtime": "Infinity",
+                f"trimmed_mean_{target}": "Infinity",
+                "target": target,
                 "error": (
                     f"Solution failed {len(failed_test_details)} test case(s) with statuses: {all_statuses}. See artifacts for details."
                 ),
@@ -796,11 +949,12 @@ class PerfAgent:
 
         # 成功情况：计算时间分数与综合分数
         pass_rate = 1.0
-        trimmed_mean_runtime = performance_metrics.get("trimmed_mean", float("inf"))
+        trimmed_mean_runtime = performance_metrics.get(target, float("inf"))
 
         metrics = {
             "pass_rate": pass_rate,
-            "trimmed_mean_runtime": trimmed_mean_runtime,
+            f"trimmed_mean_{target}": trimmed_mean_runtime,
+            "target": target,
         }
         artifacts = {"details": "All test cases passed."}
         return metrics, artifacts
@@ -817,16 +971,24 @@ class PerfAgent:
                 pr_pct = str(pr)
             lines.append(f"- Pass rate: {pr_pct}")
 
-        # trimmed_mean_runtime -> 秒，或 Infinity
-        tmr = metrics.get("trimmed_mean_runtime")
-        if tmr is not None:
+        # trimmed_mean_target
+        tmr_key = next((k for k in metrics.keys() if k.startswith("trimmed_mean_")), None)
+        tmr = metrics.get(tmr_key) if tmr_key else None
+        if tmr is not None and tmr_key:
+            tgt = tmr_key.split("_", 2)[-1]
+            unit = "s" if tgt == "runtime" else ("MB" if tgt == "memory" else "MB*s")
             if isinstance(tmr, (int, float)):
                 if tmr == float("inf"):
-                    lines.append("- Trimmed mean runtime: Infinity")
+                    lines.append(f"- Trimmed mean {tgt}: Infinity")
                 else:
-                    lines.append(f"- Trimmed mean runtime: {float(tmr):.6f}s")
+                    lines.append(f"- Trimmed mean {tgt}: {float(tmr):.6f} {unit}")
             else:
-                lines.append(f"- Trimmed mean runtime: {tmr}")
+                val = str(tmr)
+                low = val.strip().lower()
+                if low in ("inf", "+inf", "infinity", "+infinity"):
+                    lines.append(f"- Trimmed mean {tgt}: Infinity")
+                else:
+                    lines.append(f"- Trimmed mean {tgt}: {val} {unit}")
 
         # 错误信息（仅在失败时存在）
         err = metrics.get("error")
@@ -908,17 +1070,14 @@ class PerfAgent:
     def _build_messages(
         self, system_prompt: str, history: list[dict[str, Any]], user_prompt: str, limit: int = 200
     ) -> list[dict[str, str]]:
-        """根据已记录的对话历史直接构造 LLM 消息序列，保留最近 limit 条。
-
-        - 不再显式追加新的 system 或 user 消息；两者均从 history 中获取。
-        - 仅保留角色为 system/user/assistant 的历史消息。
-        """
-        msgs: list[dict[str, str]] = []
-        # 保留最近 limit 条历史
-        tail = history[-limit:] if len(history) > limit else history
-        for h in tail:
-            role = h.get("role")
-            content = h.get("content", "")
-            if role in ("system", "user", "assistant") and content:
-                msgs.append({"role": role, "content": content})
-        return msgs
+        use_all = bool(getattr(self.config.prompts, "include_all_history", False))
+        if use_all:
+            msgs: list[dict[str, str]] = []
+            tail = history[-limit:] if len(history) > limit else history
+            for h in tail:
+                role = h.get("role")
+                content = h.get("content", "")
+                if role in ("system", "user", "assistant") and content:
+                    msgs.append({"role": role, "content": content})
+            return msgs
+        return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]

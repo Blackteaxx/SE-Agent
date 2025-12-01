@@ -49,6 +49,7 @@ class TrajectoryMetadata:
     success: bool = False
     final_performance: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
+    final_best_code: Optional[str] = None
 
 
 class TrajectoryLogger:
@@ -176,6 +177,7 @@ class TrajectoryLogger:
         success: bool = True,
         final_performance: Optional[Dict[str, Any]] = None,
         error_message: Optional[str] = None,
+        final_submission_code: Optional[str] = None,
     ) -> str:
         """完成轨迹记录"""
         self.metadata.end_time = datetime.now().isoformat()
@@ -183,6 +185,7 @@ class TrajectoryLogger:
         self.metadata.success = success
         self.metadata.final_performance = final_performance
         self.metadata.error_message = error_message
+        self.metadata.final_best_code = final_submission_code
 
         trajectory_file = self.save_trajectory()  # 调用 save_trajectory 而不是 _save_trajectory
 
@@ -245,13 +248,17 @@ class TrajectoryLogger:
                     except Exception:
                         return "<unserializable>"
 
-            # 计算最终提交代码（submission）：选择最后一个包含 code_snapshot 的步骤
+            # 计算最终提交代码（submission）：优先使用 final_best_code，其次选择最后一个包含 code_snapshot 的步骤
             final_code_snapshot = None
-            for s in reversed(self.steps):
-                cs = getattr(s, "code_snapshot", None)
-                if cs:
-                    final_code_snapshot = cs
-                    break
+            override_code = getattr(self.metadata, "final_best_code", None)
+            if override_code:
+                final_code_snapshot = override_code
+            else:
+                for s in reversed(self.steps):
+                    cs = getattr(s, "code_snapshot", None)
+                    if cs:
+                        final_code_snapshot = cs
+                        break
 
             info_dict = make_serializable(asdict(self.metadata))
             # 与 sweagent 兼容：在 info 中加入 submission 字段（完整代码而非 diff）

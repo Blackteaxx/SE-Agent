@@ -1,0 +1,59 @@
+I Love Square Number
+Problem Statement
+
+Consider a graph with $\frac{N(N+1)}{2}$ vertices and $\frac{3N(N-1}{2}$ edges, where $N$ is an integer greater than or equals to 2.
+
+The set of vertices is $\{(i,j) | 1 \leq i \leq N, 1 \leq j \leq i\}$.
+There is an edge with weight $a_{i,j}$ between $(i,j)$ and $(i+1,j)$ (for $1 \leq i \leq N-1$ and $1 \leq j \leq i$).
+There is an edge with weight $b_{i,j}$ between $(i,j)$ and $(i+1,j+1)$ (for $1 \leq i \leq N-1$ and $1 \leq j \leq i$).
+There is an edge with weight $c_{i,j}$ between $(i,j)$ and $(i,j+1)$ (for $2 \leq i \leq N$ and $1 \leq j \leq i-1$).
+
+For a simple path in this graph, the weight of the path is defined as the product of the weights of the edges that the path traverses.
+
+Determine the number of unordered pairs of distinct vertices $\{s, t\}$ such that any simple path from $s$ to $t$ has a weight that is a square number.
+
+Input
+
+The input is given in the following format:
+
+$N$
+$a_{1,1}$
+$a_{2,1}$ $a_{2,2}$
+$\vdots$
+$a_{N-1,1}$ ... $a_{N-1,N-1}$
+$b_{1,1}$
+$b_{2,1}$ $b_{2,2}$
+$\vdots$
+$b_{N-1,1}$ ... $b_{N-1,N-1}$
+$c_{2,1}$
+$c_{3,1}$ $c_{3,2}$
+$\vdots$
+$c_{N,1}$ ... $c_{N,N-1}$
+
+$2 \leq N \leq 1,000$
+$1 \leq a_{i,j}, b_{i,j}, c_{i,j} \leq 10^6$
+All input values are integers.
+Output
+
+Output the answer.
+
+Sample Input 1
+2
+1
+2
+2
+
+Sample Output 1
+1
+
+Sample Input 2
+3
+1
+2 3
+4
+5 6
+7
+8 9
+
+Sample Output 2
+0

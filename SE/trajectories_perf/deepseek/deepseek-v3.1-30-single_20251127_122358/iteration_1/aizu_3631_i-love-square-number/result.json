@@ -1,0 +1,11 @@
+{
+  "instance_id": "aizu_3631_i-love-square-number",
+  "initial_code": "# Start your code here\n",
+  "optimized_code": "# Start your code here\n",
+  "initial_performance": "Infinity",
+  "final_performance": "Infinity",
+  "total_iterations": 10,
+  "optimization_history": [],
+  "success": false,
+  "trajectory_file": "/data/CodeEfficiency/SE-Agent/SE/trajectories_perf/deepseek/deepseek-v3.1-30-single_20251127_122358/iteration_1/aizu_3631_i-love-square-number/aizu_3631_i-love-square-number.traj"
+}
