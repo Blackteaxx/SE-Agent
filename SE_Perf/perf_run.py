@@ -90,7 +90,14 @@ def _execute_operator_step(
         logger.error("算子步骤缺少 operator 字段")
         return {}
 
-    operator = create_operator(operator_name, se_config)
+    # 将选择模式注入算子配置（算子内部优先使用 step['selection_mode']，其次使用 config['operator_selection_mode']）
+    op_cfg = dict(se_config) if isinstance(se_config, dict) else {}
+    try:
+        if isinstance(step, dict) and step.get("selection_mode"):
+            op_cfg["operator_selection_mode"] = step.get("selection_mode")
+    except Exception:
+        pass
+    operator = create_operator(operator_name, op_cfg)
     if not operator:
         logger.error(f"无法创建算子实例: {operator_name}")
         return {}
@@ -124,6 +131,9 @@ def _summarize_iteration_to_pool(
     se_config: dict,
     logger,
     label_prefix: str | None = None,
+    source_labels: list[str] | None = None,
+    source_labels_map: dict[str, list[str]] | None = None,
+    operator_name: str | None = None,
 ) -> None:
     """
     将一次迭代生成的轨迹数据（.tra 文件等）提取并汇总到轨迹池中。
@@ -145,6 +155,12 @@ def _summarize_iteration_to_pool(
                 instance_name, problem_description, tra_content, patch_content = item
                 perf_metrics = None
             label = str(label_prefix) if label_prefix else f"iter{iteration_index}"
+            per_inst_src = None
+            try:
+                if source_labels_map and isinstance(source_labels_map, dict):
+                    per_inst_src = source_labels_map.get(str(instance_name))
+            except Exception:
+                per_inst_src = None
             trajectories_to_process.append(
                 {
                     "label": label,
@@ -155,6 +171,8 @@ def _summarize_iteration_to_pool(
                     "iteration": iteration_index,
                     "performance": (perf_metrics or {}).get("final_performance"),
                     "source_dir": str(iteration_dir / instance_name),
+                    "source_entry_labels": list(per_inst_src or []),
+                    "operator_name": str(operator_name) if operator_name is not None else None,
                 }
             )
         traj_pool_manager.summarize_and_add_trajectories(
@@ -600,6 +618,8 @@ def main():
         print(f"  实例目录: {se_config['instances']['instances_dir']}")
         print(f"  输出目录: {output_dir}")
 
+        # ============ 开始 PerfAgent 多迭代执行 ============
+
         iterations = se_config.get("strategy", {}).get("iterations", [])
         print(f"  迭代次数: {len(iterations)}")
 
@@ -624,6 +644,7 @@ def main():
                     "num_workers": se_config.get("num_workers", 1),
                 }
 
+            # ============ 执行算子 ============
             if operator_name == "plan":
                 print("🔧 执行算子: plan (展开为多次迭代)")
                 step = {
@@ -679,6 +700,9 @@ def main():
                                         se_config,
                                         logger,
                                         label_prefix=label,
+                                        source_labels=[],
+                                        source_labels_map=None,
+                                        operator_name=operator_name,
                                     )
                                 else:
                                     logger.warning(f"迭代 {next_iteration_index} 未生成.tra文件")
@@ -732,6 +756,7 @@ def main():
                     initial_code_dir_for_run = op_result["initial_code_dir"]
                 if isinstance(op_result.get("instance_templates_dir"), str):
                     instance_templates_dir_for_run = op_result["instance_templates_dir"]
+                source_labels_map = op_result.get("source_entry_labels_per_instance") or {}
                 if is_filter_operator:
                     logger.info("过滤算子步骤，执行后跳过PerfAgent")
                     try:
@@ -761,7 +786,7 @@ def main():
             print(f"算子: {iteration.get('operator', 'None')}")
             print(f"输出目录: {iteration_output_dir}")
 
-            # ================================== 依据输出选择最佳 Solution ==================================
+            # ============ 执行 PerfAgent  ============
 
             if args.mode == "execute" and not is_filter_operator:
                 logger.info(f"直接执行模式：迭代 {next_iteration_index}")
@@ -771,6 +796,8 @@ def main():
                 except Exception:
                     pass
                 print(f"执行结果: {result['status']}")
+
+                # ============ 处理 PerfAgent 执行结果 ============
 
                 # 成功则生成.tra并更新 traj.pool
                 # .tra 直接使用 history 生成
@@ -792,6 +819,9 @@ def main():
                                 se_config,
                                 logger,
                                 label_prefix=prefix,
+                                source_labels=src_labels,
+                                source_labels_map=source_labels_map if isinstance(source_labels_map, dict) else None,
+                                operator_name=operator_name,
                             )
                         else:
                             logger.warning(f"迭代 {next_iteration_index} 未生成.tra文件")

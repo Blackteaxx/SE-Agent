@@ -29,10 +29,7 @@ class CrossoverOperator(BaseOperator):
         traj_pool_manager: TrajPoolManager,
         workspace_dir: str,
     ) -> dict[str, Any]:
-        if not step_config.get("inputs") or len(step_config["inputs"]) != 2:
-            return {}
-        input_label1 = step_config["inputs"][0].get("label")
-        input_label2 = step_config["inputs"][1].get("label")
+        # 不直接初始化 input_label，统一用选择方法解析
 
         output_dir = Path(workspace_dir) / "system_prompt"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -41,26 +38,42 @@ class CrossoverOperator(BaseOperator):
             instance_name, entry = args
             try:
                 if not isinstance(entry, dict):
-                    return 0
-                ref1 = entry.get(input_label1) if input_label1 else None
-                ref2 = entry.get(input_label2) if input_label2 else None
+                    return {"written": 0}
+                # 当输入不足时，自适应选择两个源轨迹（不重复）
+                chosen = self._select_source_labels(entry, step_config, required_n=2)
+                pick1 = chosen[0] if len(chosen) >= 1 else None
+                pick2 = chosen[1] if len(chosen) >= 2 else None
+                if pick1 and pick2 and pick1 == pick2:
+                    # 保障不重复，若重复则尝试再选一个不同的
+                    extra = [l for l in self._weighted_select_labels(entry, k=3) if l != pick1]
+                    if extra:
+                        pick2 = extra[0]
+                ref1 = entry.get(pick1) if pick1 else None
+                ref2 = entry.get(pick2) if pick2 else None
                 if not isinstance(ref1, dict) or not isinstance(ref2, dict):
-                    return 0
+                    return {
+                        "written": 0,
+                        "instance_name": instance_name,
+                        "source_entry_labels": [str(pick1 or ""), str(pick2 or "")],
+                    }
                 problem_statement = entry.get("problem")
-                summary1 = self._format_entry({str(input_label1 or "iter1"): ref1}) if isinstance(ref1, dict) else ""
-                summary2 = self._format_entry({str(input_label2 or "iter2"): ref2}) if isinstance(ref2, dict) else ""
+                summary1 = self._format_entry({str(pick1 or "iter1"): ref1}) if isinstance(ref1, dict) else ""
+                summary2 = self._format_entry({str(pick2 or "iter2"): ref2}) if isinstance(ref2, dict) else ""
                 if not problem_statement or not summary1 or not summary2:
-                    return 0
+                    used = [s for s in [pick1, pick2] if isinstance(s, str) and s]
+                    return {"written": 0, "instance_name": instance_name, "source_entry_labels": [str(x) for x in used]}
                 content = self._build_additional_requirements(summary1, summary2)
                 if not content:
-                    return 0
+                    used = [s for s in [pick1, pick2] if isinstance(s, str) and s]
+                    return {"written": 0, "instance_name": instance_name, "source_entry_labels": [str(x) for x in used]}
                 data = {"prompts": {"additional_requirements": content}}
                 file_path = output_dir / f"{instance_name}.yaml"
                 with open(file_path, "w", encoding="utf-8") as f:
                     yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
-                return 1
+                used = [s for s in [pick1, pick2] if isinstance(s, str) and s]
+                return {"written": 1, "instance_name": instance_name, "source_entry_labels": [str(x) for x in used]}
             except Exception:
-                return 0
+                return {"written": 0}
 
         num = self.config.get("num_workers", 1)
         try:
@@ -70,15 +83,31 @@ class CrossoverOperator(BaseOperator):
 
         all_instances = traj_pool_manager.get_all_trajectories()
         written = 0
+        per_instance_sources: dict[str, list[str]] = {}
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
             futures = [ex.submit(_work, (name, entry)) for name, entry in (all_instances or {}).items()]
             for fut in as_completed(futures):
                 try:
-                    written += int(fut.result() or 0)
+                    res = fut.result()
+                    if isinstance(res, dict):
+                        try:
+                            written += int(res.get("written", 0) or 0)
+                        except Exception:
+                            pass
+                        inst = res.get("instance_name")
+                        labs = res.get("source_entry_labels")
+                        if isinstance(inst, str) and isinstance(labs, list):
+                            per_instance_sources[inst] = [str(x) for x in labs]
+                    else:
+                        written += int(res or 0)
                 except Exception:
                     pass
 
-        return {"instance_templates_dir": str(output_dir), "generated_count": written}
+        return {
+            "instance_templates_dir": str(output_dir),
+            "generated_count": written,
+            "source_entry_labels_per_instance": per_instance_sources,
+        }
 
     def _build_additional_requirements(self, trajectory1: str, trajectory2: str) -> str:
         t1 = textwrap.indent(trajectory1.strip(), "  ")

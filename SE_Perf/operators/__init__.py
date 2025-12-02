@@ -11,6 +11,7 @@ from .base import BaseOperator, EnhanceOperator, TemplateOperator
 from .crossover import CrossoverOperator
 from .filter import FilterTrajectoriesOperator
 from .plan import PlanOperator
+from .reflection_refine import ReflectionRefineOperator
 from .registry import create_operator, get_operator_class, get_registry, list_operators, register_operator
 
 # 导入具体算子实现
@@ -36,4 +37,5 @@ __all__ = [
     "CrossoverOperator",
     "FilterTrajectoriesOperator",
     "PlanOperator",
+    "ReflectionRefineOperator",
 ]

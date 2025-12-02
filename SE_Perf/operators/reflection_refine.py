@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Alternative Strategy Operator
+Reflection and Refine Operator
 
-基于指定的输入轨迹，生成一个全新的、策略上截然不同的解决方案。
-此算子旨在跳出局部最优，从不同维度（例如，算法、数据结构、I/O模式）探索解空间。
+根据给定的源轨迹（source trajectory）进行反思与改进，生成更优的实现策略要求，
+用于在下一次 PerfAgent 迭代中指导代码优化。该算子按实例并行处理，输出为每个实例的
+`prompts.additional_requirements` 文本，调用方在对应的 iteration 目录下落盘。
 """
 
 import textwrap
@@ -11,20 +12,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-import yaml
 from core.utils.traj_pool_manager import TrajPoolManager
 
 from operators.base import BaseOperator
 
 
-class AlternativeStrategyOperator(BaseOperator):
+class ReflectionRefineOperator(BaseOperator):
     def get_name(self) -> str:
-        return "alternative_strategy"
+        return "reflection_refine"
 
     """
-    替代策略算子：
-    根据 step_config 中指定的单个输入轨迹（input），
-    生成一个策略迥异的新轨迹（output）。
+    反思与改进算子：
+    输入：step_config.inputs 中给定的单个源轨迹标签，如 {"label": "sol1"}
+    输出：为每个实例生成带有反思与具体改进指令的 additional_requirements 文本。
     """
 
     def run(
@@ -36,43 +36,52 @@ class AlternativeStrategyOperator(BaseOperator):
         output_dir = Path(workspace_dir) / "system_prompt"
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        # 不直接初始化 input_label，统一用选择方法解析
+
         def _work(args):
             instance_name, entry = args
             try:
                 if not isinstance(entry, dict):
                     return {"written": 0}
                 problem_statement = entry.get("problem")
-                previous_approach_summary = None
+                src_summary = None
                 used_labels: list[str] = []
-                # 使用统一方法选择源标签（required_n=1）；若无则回退到全体加权采样
+                # 若未提供输入标签，进行线性加权采样选择源轨迹
                 chosen = self._select_source_labels(entry, step_config, required_n=1)
                 if chosen:
                     sub = entry.get(chosen[0])
                     if isinstance(sub, dict):
-                        previous_approach_summary = self._format_entry({str(chosen[0]): sub})
+                        src_summary = self._format_entry({str(chosen[0]): sub})
                         used_labels = [str(chosen[0])]
                 else:
-                    src_keys = self._weighted_select_labels(entry, k=1)
-                    if src_keys:
-                        sub = entry.get(src_keys[0])
+                    keys = self._weighted_select_labels(entry, k=1)
+                    if keys:
+                        sub = entry.get(keys[0])
                         if isinstance(sub, dict):
-                            previous_approach_summary = self._format_entry({str(src_keys[0]): sub})
-                            used_labels = [str(src_keys[0])]
-                if not previous_approach_summary:
-                    previous_approach_summary = self._format_entry(entry)
-                if not problem_statement or not previous_approach_summary:
+                            src_summary = self._format_entry({str(keys[0]): sub})
+                            used_labels = [str(keys[0])]
+                # 最后回退：使用最新条目摘要
+                if not src_summary:
+                    src_summary = self._format_entry(entry)
+
+                if not problem_statement or not src_summary:
                     return {"written": 0, "instance_name": instance_name, "source_entry_labels": used_labels}
-                content = self._build_additional_requirements(previous_approach_summary)
+
+                content = self._build_additional_requirements(src_summary)
                 if not content:
                     return {"written": 0, "instance_name": instance_name, "source_entry_labels": used_labels}
+
                 data = {"prompts": {"additional_requirements": content}}
                 file_path = output_dir / f"{instance_name}.yaml"
                 with open(file_path, "w", encoding="utf-8") as f:
+                    import yaml
+
                     yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
                 return {"written": 1, "instance_name": instance_name, "source_entry_labels": used_labels}
             except Exception:
                 return {"written": 0}
 
+        # 并发度
         num = self.config.get("num_workers", 1)
         try:
             max_workers = max(1, int(num))
@@ -107,26 +116,28 @@ class AlternativeStrategyOperator(BaseOperator):
             "source_entry_labels_per_instance": per_instance_sources,
         }
 
-    def _build_additional_requirements(self, previous_approach: str) -> str:
-        prev = textwrap.indent(previous_approach.strip(), "  ")
-        req = f"""
-### STRATEGY MODE: ALTERNATIVE SOLUTION STRATEGY
-You are explicitly instructed to abandon the current optimization trajectory and implement a FUNDAMENTALLY DIFFERENT approach.
-
-### PREVIOUS APPROACH SUMMARY
-{prev}
-
-### EXECUTION GUIDELINES
-1. **Qualitative Shift**: You must NOT provide incremental refinements, micro-optimizations, or simple bugfixes to the code above.
-2. **New Paradigm**: Switch the algorithmic paradigm or data structure entirely (e.g., if Greedy -> try DP; if List -> try Heap/Deque; if Iterative -> try Recursive).
-3. **Shift Bottleneck Focus**: If the previous attempt focused heavily on Core Algorithmics, consider an I/O-centric technique (or vice versa).
-4. **Target**: Aim for a better Big-O complexity (e.g., O(N) over O(N log N)) where feasible.
+    def _build_additional_requirements(self, source_summary: str) -> str:
         """
+        构造带有反思与改进要求的 additional_requirements 文本。
+        """
+        src = textwrap.indent((source_summary or "").strip(), "  ")
+        req = f"""
+### STRATEGY MODE: REFLECTION AND REFINE STRATEGY
+You must explicitly reflect on the previous trajectory and implement concrete improvements.
 
+### SOURCE TRAJECTORY SUMMARY
+{src}
+
+### REFINEMENT GUIDELINES
+1. **Diagnose**: Identify the main shortcomings (correctness risks, bottlenecks, redundant work, I/O overhead).
+2. **Fixes**: Propose targeted code-level changes (algorithmic upgrade, data structure replacement, caching/precomputation, I/O batching).
+3. **Maintain Correctness**: Prioritize correctness; add guards/tests if necessary before optimizing runtime.
+4. **Performance Goal**: Aim for measurable runtime improvement. Prefer asymptotic gains over micro-optimizations.
+"""
         return req
 
 
 # 注册算子
 from .registry import register_operator
 
-register_operator("alternative_strategy", AlternativeStrategyOperator)
+register_operator("reflection_refine", ReflectionRefineOperator)

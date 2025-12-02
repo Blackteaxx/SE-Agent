@@ -219,7 +219,7 @@ class TrajectorySummarizer:
         for attempt in range(1, 4):
             try:
                 response = self.llm_client.call_with_system_prompt(
-                    system_prompt=system_prompt, user_prompt=user_prompt, temperature=0.6, max_tokens=10000
+                    system_prompt=system_prompt, user_prompt=user_prompt, temperature=0.7, max_tokens=10000
                 )
                 self.logger.debug(f"LLM原始响应 (迭代{iteration}, 第{attempt}次):\n{response}")
                 # 去除思考内容

@@ -176,9 +176,17 @@ class TrajPoolManager:
             if old_label in inst_entry:
                 old_entry = inst_entry.get(old_label)
                 if str(new_label) not in inst_entry:
-                    inst_entry[str(new_label)] = old_entry.copy() if isinstance(old_entry, dict) else old_entry
-                    if isinstance(inst_entry[str(new_label)], dict):
-                        inst_entry[str(new_label)]["label"] = new_label
+                    new_entry = old_entry.copy() if isinstance(old_entry, dict) else old_entry
+                    if isinstance(new_entry, dict):
+                        new_entry["label"] = new_label
+                        src = new_entry.get("source_entry_labels")
+                        if isinstance(src, list):
+                            if old_label not in src:
+                                src.append(old_label)
+                            new_entry["source_entry_labels"] = src
+                        else:
+                            new_entry["source_entry_labels"] = [old_label]
+                    inst_entry[str(new_label)] = new_entry
                 inst_entry["label"] = new_label
             else:
                 # 若未找到子键，回退到设置顶层当前标签
@@ -196,9 +204,17 @@ class TrajPoolManager:
             if old_label in inst_entry:
                 old_entry = inst_entry.get(old_label)
                 if str(new_label) not in inst_entry:
-                    inst_entry[str(new_label)] = old_entry.copy() if isinstance(old_entry, dict) else old_entry
-                    if isinstance(inst_entry[str(new_label)], dict):
-                        inst_entry[str(new_label)]["label"] = new_label
+                    new_entry = old_entry.copy() if isinstance(old_entry, dict) else old_entry
+                    if isinstance(new_entry, dict):
+                        new_entry["label"] = new_label
+                        src = new_entry.get("source_entry_labels")
+                        if isinstance(src, list):
+                            if old_label not in src:
+                                src.append(old_label)
+                            new_entry["source_entry_labels"] = src
+                        else:
+                            new_entry["source_entry_labels"] = [old_label]
+                    inst_entry[str(new_label)] = new_entry
             inst_entry["label"] = new_label
         self.save_pool(pool_data)
         self.logger.info(f"已重命名标签 '{old_label}' 为 '{new_label}'。")
@@ -322,6 +338,14 @@ class TrajPoolManager:
                     problem_description=item.get("problem_description"),
                 )
 
+                # 在总结对象中附加来源标签，便于后续分析
+                try:
+                    src_labels = item.get("source_entry_labels")
+                    if src_labels is not None:
+                        summary["source_entry_labels"] = list(src_labels)
+                except Exception:
+                    pass
+
                 # 构建完整的轨迹信息对象
                 traj_info = {
                     "label": item["label"],
@@ -332,6 +356,8 @@ class TrajPoolManager:
                     "summary": summary,
                     "problem_description": item.get("problem_description"),
                     "code": item["patch_content"],
+                    "source_entry_labels": item.get("source_entry_labels"),
+                    "operator_name": item.get("operator_name"),
                 }
                 return traj_info
             except Exception as e:
@@ -376,6 +402,8 @@ class TrajPoolManager:
                         "source_dir": res.get("source_dir"),
                         "code": res.get("code"),
                         "iteration": res.get("iteration"),
+                        "source_entry_labels": res.get("source_entry_labels"),
+                        "operator_name": res.get("operator_name"),
                     }
                     self.add_or_update_instance(inst_name, entry)
                     written += 1

@@ -34,6 +34,8 @@ You will be provided with:
 
 Return your analysis in JSON format with the following fields:
 
+- "solution_name": The nick name of the final solution (e.g., "monotonic_stack").
+
 - "approach_summary": A concise high-level narrative describing the agent's complete journey and final approach (replaces 'overall_summary').
 
 - "evolution_steps": A list of objects, one for each iteration (i.e., each `assistant` turn) found in the trajectory file. This chronologically tracks the agent's journey.
@@ -43,13 +45,6 @@ Return your analysis in JSON format with the following fields:
     - "change_description": The specific technique or change implemented.
     - "metrics": The resulting metrics from the *next* 'user' feedback message (i.e., the feedback *after* this change was applied).
     - "status": A concise summary of this iteration's outcome (e.g., "Success: 100% pass rate", "Failed: Correctness regression", "Failed: Error", "Failed: Performance regression").
-
-- "final_solution": {
-    - "iteration": The iteration number of the *last* entry in the trajectory.
-    - "code": The complete, final code. Use the content from the prediction (.pred) file if provided; otherwise, use the last "Current Program" block from the trajectory.
-    - "metrics": The final metrics for this code (from the last user feedback in the trajectory).
-    - "status": The final status (e.g., "Correct and Optimized", "Correct but Slow", "Failed Correctness", "Failed (Error)").
-}
 
 - "analysis": An object containing high-level insights derived from the entire trajectory.
     - "best_strategy": An object describing the *best correct solution* achieved during the trajectory (if any). If no solution was ever correct, this can be null.

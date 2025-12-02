@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trajectory Pool Visualization</title>
+    <script src="/static/cytoscape.min.js"></script>
+    <script src="/static/chart.min.js"></script>
+    <script src="/static/chartjs-plugin-datalabels.min.js"></script>
+    <script src="/static/dagre.min.js"></script>
+    <script src="/static/cytoscape-dagre.min.js"></script>
+    <style>
+        :root {
+            --primary-color: #2c3e50;
+            --secondary-color: #3498db;
+            --accent-color: #e74c3c;
+            --light-gray: #ecf0f1;
+            --border-color: #bdc3c7;
+            --text-color: #333;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            color: var(--text-color);
+            background-color: #fdfdfd;
+        }
+
+        #header {
+            padding: 15px 20px;
+            background-color: var(--primary-color);
+            color: white;
+            display: flex;
+            align-items: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            z-index: 10;
+        }
+
+        #header label {
+            margin-right: 15px;
+            font-weight: 600;
+            font-size: 1.1em;
+        }
+
+        #instance-select {
+            padding: 8px 12px;
+            border-radius: 4px;
+            border: none;
+            font-size: 14px;
+            min-width: 300px;
+            background-color: white;
+            color: var(--text-color);
+        }
+
+        #container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        #left-panel {
+            width: 65%;
+            display: flex;
+            flex-direction: column;
+            border-right: 1px solid var(--border-color);
+            position: relative;
+        }
+
+        #cy {
+            flex: 1;
+            background-color: #fafafa;
+            background-image: radial-gradient(#e0e0e0 1px, transparent 1px);
+            background-size: 20px 20px;
+        }
+
+        #chart-container {
+            height: 320px;
+            padding: 20px;
+            background-color: white;
+            border-top: 1px solid var(--border-color);
+            box-shadow: 0 -2px 10px rgba(0,0,0,0.05);
+        }
+
+        #right-panel {
+            width: 35%;
+            padding: 0;
+            overflow-y: auto;
+            background-color: #fff;
+            box-shadow: -2px 0 5px rgba(0,0,0,0.05);
+        }
+
+        #node-details {
+            padding: 25px;
+        }
+
+        h2 {
+            margin-top: 0;
+            color: var(--primary-color);
+            border-bottom: 2px solid var(--secondary-color);
+            padding-bottom: 10px;
+            font-size: 1.5em;
+        }
+
+        h3 {
+            color: var(--primary-color);
+            margin-top: 20px;
+            margin-bottom: 10px;
+            font-size: 1.2em;
+        }
+
+        pre {
+            white-space: pre-wrap;
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 13px;
+            color: #444;
+            overflow-x: auto;
+        }
+
+        .info-section {
+            margin-bottom: 20px;
+            background: white;
+            border-radius: 8px;
+        }
+
+        .info-row {
+            display: flex;
+            padding: 8px 0;
+            border-bottom: 1px solid #eee;
+        }
+
+        .info-label {
+            font-weight: 600;
+            color: #555;
+            width: 120px;
+            flex-shrink: 0;
+        }
+
+        .info-value {
+            color: #333;
+            flex: 1;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+            color: white;
+            background-color: var(--secondary-color);
+        }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <label for="instance-select">Select Instance:</label>
+        <select id="instance-select">
+            <option value="">Loading...</option>
+        </select>
+    </div>
+    <div id="container">
+        <div id="left-panel">
+            <div id="cy"></div>
+            <div id="chart-container">
+                <canvas id="performanceChart"></canvas>
+            </div>
+        </div>
+        <div id="right-panel">
+            <div id="node-details">
+                <h2>Node Details</h2>
+                <p>Click on a node to view details here.</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            let cy = null;
+            let chart = null;
+            let rawData = null;
+
+            // Initialize Chart.js
+            const ctx = document.getElementById('performanceChart').getContext('2d');
+
+            // Fetch data
+            fetch('/api/data')
+                .then(response => {
+                    console.log('Fetch response status:', response.status);
+                    return response.json();
+                })
+                .then(data => {
+                    console.log('Data received:', data);
+                    
+                    // Register dagre extension
+                    if (typeof cytoscapeDagre !== 'undefined') {
+                        cytoscape.use(cytoscapeDagre);
+                    } else if (typeof dagre !== 'undefined' && cytoscape) {
+                        // Try auto-registration or check if already registered
+                        // Sometimes it's auto-registered if included after cytoscape
+                    }
+
+                    rawData = data;
+                    populateInstanceSelect(data);
+                })
+                .catch(error => {
+                    console.error('Error fetching data:', error);
+                    document.getElementById('node-details').innerHTML = `<h2>Error</h2><p>${error.message}</p>`;
+                });
+
+            function populateInstanceSelect(data) {
+                console.log('Populating select with keys:', Object.keys(data));
+                const select = document.getElementById('instance-select');
+                select.innerHTML = '';
+                
+                // Sort keys for consistent order
+                const keys = Object.keys(data).sort();
+                
+                if (keys.length > 0) {
+                    keys.forEach(key => {
+                        const option = document.createElement('option');
+                        option.value = key;
+                        option.textContent = key;
+                        select.appendChild(option);
+                    });
+                    
+                    // Select first instance by default
+                    select.value = keys[0];
+                    console.log('Auto-selecting first instance:', keys[0]);
+                    renderInstance(keys[0]);
+                } else {
+                    console.warn('No keys found in data');
+                    select.innerHTML = '<option>No data available</option>';
+                }
+
+                select.addEventListener('change', function() {
+                    console.log('Instance changed to:', this.value);
+                    renderInstance(this.value);
+                });
+            }
+
+            function renderInstance(instanceKey) {
+                console.log('Rendering instance:', instanceKey);
+                const instanceData = rawData[instanceKey];
+                if (!instanceData) {
+                    console.error('No data found for instance:', instanceKey);
+                    return;
+                }
+
+                try {
+                    renderGraph(instanceData);
+                    renderChart(instanceData);
+                } catch (e) {
+                    console.error('Error rendering instance:', e);
+                }
+                
+                // Clear details panel but keep header
+                // document.getElementById('node-details').innerHTML = '<h2>Node Details</h2><p>Click on a node to view details here.</p>';
+                
+                // Show problem description
+                const problemDesc = instanceData['problem'] || 'No problem description available.';
+                displayProblemDescription(problemDesc);
+            }
+
+            function displayProblemDescription(desc) {
+                const container = document.getElementById('node-details');
+                container.innerHTML = `
+                    <div class="info-section" style="background-color: #f8f9fa; border-left: 4px solid #2c3e50; padding: 15px; margin-bottom: 25px; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                        <h3 style="margin-top: 0; border-bottom: 1px solid #e9ecef; padding-bottom: 10px; margin-bottom: 15px; color: #2c3e50;">Problem Description</h3>
+                        <div style="max-height: 400px; overflow-y: auto; font-family: 'Segoe UI', sans-serif; line-height: 1.6; color: #333; white-space: pre-wrap; font-size: 14px;">${desc}</div>
+                    </div>
+                    <h2>Node Details</h2>
+                    <p id="default-msg">Click on a node to view details here.</p>
+                `;
+            }
+
+            function renderGraph(instanceData) {
+                console.log('Rendering graph for data:', instanceData);
+                const elements = [];
+                const nodes = [];
+                const edges = [];
+                
+                // Parse instance data to extract nodes (solutions)
+                // Keys in instanceData that are not "problem" are likely solutions
+                Object.keys(instanceData).forEach(key => {
+                    if (key === 'problem') return;
+                    
+                    const solution = instanceData[key];
+                    if (typeof solution !== 'object') return;
+                    
+                    // Create node
+                    let nodeColor = '#3498db'; // Default blue
+                    let labelText = solution.label || key;
+                    
+                        // Determine color based on status or metrics if available
+                        if (solution.summary && solution.summary.metrics) {
+                            const metrics = solution.summary.metrics;
+                            if (metrics.includes("Pass rate: 100.00%")) {
+                                nodeColor = '#2ecc71'; // Green for success
+                            } else if (metrics.includes("Pass rate: 0.00%") || metrics.includes("Failed") || metrics.includes("Error")) {
+                                nodeColor = '#e74c3c'; // Red for failure
+                            } else if (metrics.includes("Pass rate:")) {
+                                nodeColor = '#f39c12'; // Orange for partial/mixed
+                            }
+                        } else if (solution.summary && solution.summary.evolution_steps) {
+                             // Fallback to checking evolution steps status
+                             const steps = solution.summary.evolution_steps;
+                             if (steps.length > 0) {
+                                 const lastStep = steps[steps.length - 1];
+                                 if (lastStep.status && (lastStep.status.includes("Success") || lastStep.status.includes("100%"))) {
+                                     nodeColor = '#2ecc71';
+                                 } else if (lastStep.status && (lastStep.status.includes("Failed") || lastStep.status.includes("Error"))) {
+                                     nodeColor = '#e74c3c';
+                                 }
+                             }
+                        }
+
+                    nodes.push({
+                        data: { 
+                            id: key, 
+                            label: labelText,
+                            info: solution
+                        },
+                        style: {
+                            'background-color': nodeColor
+                        }
+                    });
+                    
+                    // Create edges based on source_entry_labels
+                    let sourceLabels = [];
+                    if (solution.summary && solution.summary.source_entry_labels) {
+                        sourceLabels = solution.summary.source_entry_labels;
+                    } else if (solution.source_entry_labels) {
+                        sourceLabels = solution.source_entry_labels;
+                    }
+
+                    sourceLabels.forEach(sourceLabel => {
+                        // Ensure source node exists or will exist
+                        // In this pool, sourceLabel should be a key in instanceData
+                        // If sourceLabel is not in instanceData keys, we might have a problem or it's an external reference
+                        // For now, we add the edge. Cytoscape might warn if source doesn't exist, but usually it handles it gracefully or we can filter.
+                        
+                        if (sourceLabel && sourceLabel.trim() !== '') {
+                            // Always add edge if source label is valid
+                            // If source node is missing in instanceData, we should create a ghost node for it
+                            
+                            const sourceExists = nodes.some(n => n.data.id === sourceLabel);
+                            if (!sourceExists && instanceData[sourceLabel]) {
+                                // It exists in data but maybe processed later? No, we iterate keys.
+                                // It should be there.
+                            } else if (!sourceExists) {
+                                // Source node is missing from current instanceData keys
+                                // Create a ghost node
+                                nodes.push({
+                                    data: { 
+                                        id: sourceLabel, 
+                                        label: sourceLabel + ' (External)',
+                                        info: { label: sourceLabel, summary: { solution_name: 'Unknown' } }
+                                    },
+                                    style: { 'background-color': '#ccc' }
+                                });
+                            }
+
+                            edges.push({
+                                data: {
+                                    source: sourceLabel,
+                                    target: key
+                                }
+                            });
+                        }
+                    });
+                });
+
+                if (cy) {
+                    cy.destroy();
+                }
+
+                cy = cytoscape({
+                    container: document.getElementById('cy'),
+                    elements: [...nodes, ...edges],
+                    style: [
+                        {
+                            selector: 'node',
+                            style: {
+                                'background-color': '#3498db',
+                                'label': 'data(label)',
+                                'color': '#fff',
+                                'text-valign': 'center',
+                                'text-halign': 'center',
+                                'font-size': '12px',
+                                'font-weight': 'bold',
+                                'width': '120px',
+                                'height': '50px',
+                                'shape': 'round-rectangle',
+                                'text-wrap': 'wrap',
+                                'text-max-width': '110px',
+                                'border-width': 2,
+                                'border-color': '#fff',
+                                'shadow-blur': 3,
+                                'shadow-color': '#ccc',
+                                'shadow-opacity': 0.5
+                            }
+                        },
+                        {
+                            selector: 'edge',
+                            style: {
+                                'width': 2,
+                                'line-color': '#bdc3c7',
+                                'target-arrow-color': '#bdc3c7',
+                                'target-arrow-shape': 'triangle',
+                                'curve-style': 'bezier',
+                                'arrow-scale': 1.2
+                            }
+                        },
+                        {
+                            selector: ':selected',
+                            style: {
+                                'border-width': 3,
+                                'border-color': '#2c3e50',
+                                'shadow-blur': 10,
+                                'shadow-color': '#2c3e50',
+                                'shadow-opacity': 0.3
+                            }
+                        }
+                    ],
+                    layout: {
+                        name: 'dagre',
+                        rankDir: 'LR'
+                    }
+                });
+
+                cy.on('tap', 'node', function(evt){
+                    const node = evt.target;
+                    displayNodeDetails(node.data('info'));
+                });
+            }
+
+            function displayNodeDetails(info) {
+                // We don't want to overwrite the problem description
+                // So we should append or replace only the node details part
+                // Or easier: just re-render everything in the right panel properly
+                // But wait, we should keep problem description at the top?
+                
+                const container = document.getElementById('node-details');
+                
+                // Check if problem description exists, save it
+                let problemHtml = '';
+                const existingProblem = container.querySelector('.info-section h3');
+                if (existingProblem && existingProblem.textContent === 'Problem Description') {
+                    problemHtml = container.querySelector('.info-section').outerHTML;
+                }
+                
+                let html = problemHtml; // Start with problem description
+                html += `<h2>${info.label || 'Node Details'}</h2>`;
+                
+                // Helper to recursively display object
+                function formatValue(val) {
+                    if (typeof val === 'object' && val !== null) {
+                        return '<pre>' + JSON.stringify(val, null, 2) + '</pre>';
+                    }
+                    return val;
+                }
+
+                // Display specific fields first if they exist
+                if (info.iteration !== undefined) {
+                    html += `<div class="info-section"><span class="info-label">Iteration:</span> ${info.iteration}</div>`;
+                }
+                if (info.performance !== undefined) {
+                    html += `<div class="info-section"><span class="info-label">Performance:</span> ${info.performance}</div>`;
+                }
+                
+                if (info.summary) {
+                    html += `<div class="info-section"><h3>Summary</h3>`;
+                    if (info.summary.solution_name) {
+                        html += `<div><span class="info-label">Solution Name:</span> ${info.summary.solution_name}</div>`;
+                    }
+                    if (info.summary.approach_summary) {
+                        html += `<div><span class="info-label">Approach:</span> <p>${info.summary.approach_summary}</p></div>`;
+                    }
+                    html += `</div>`;
+                }
+
+                if (info.code) {
+                     html += `<div class="info-section"><h3>Code</h3><pre>${info.code}</pre></div>`;
+                }
+
+                // Generic dump of other fields
+                html += `<div class="info-section"><h3>Full Data</h3><pre>${JSON.stringify(info, null, 2)}</pre></div>`;
+
+                container.innerHTML = html;
+            }
+
+            function renderChart(instanceData) {
+                // Extract all solutions
+                const allSolutions = [];
+                
+                Object.keys(instanceData).forEach(key => {
+                    if (key === 'problem') return;
+                    const solution = instanceData[key];
+                    
+                    let iter = solution.iteration;
+                    let perf = solution.performance;
+                    let label = solution.label || key;
+
+                    // Try to find iteration in evolution_steps if missing
+                    if (iter === undefined && solution.summary && solution.summary.evolution_steps) {
+                         const steps = solution.summary.evolution_steps;
+                         if (steps.length > 0) {
+                             iter = steps[steps.length - 1].iteration;
+                         }
+                    }
+
+                    if (iter !== undefined) {
+                        // Handle performance
+                        let val = Infinity;
+                        if (perf !== undefined && perf !== "Infinity") {
+                             if (typeof perf === 'string') {
+                                 val = parseFloat(perf);
+                             } else {
+                                 val = perf;
+                             }
+                             if (isNaN(val)) val = Infinity;
+                        }
+                        
+                        // Add to all solutions list if we have valid iteration
+                        if (val !== Infinity) {
+                            allSolutions.push({
+                                x: parseInt(iter),
+                                y: val,
+                                label: label,
+                                solutionKey: key,
+                                info: solution
+                            });
+                        }
+                    }
+                });
+
+                // Calculate Best Performance Line (Pareto Frontier for Min Performance)
+                // We need to find the minimum performance up to each iteration
+                // Group by iteration first to find best per iteration
+                const bestPerIter = {};
+                allSolutions.forEach(sol => {
+                    if (!bestPerIter[sol.x] || sol.y < bestPerIter[sol.x].y) {
+                        bestPerIter[sol.x] = sol;
+                    }
+                });
+
+                // Create sorted iterations list
+                const sortedIters = Object.keys(bestPerIter).map(i => parseInt(i)).sort((a, b) => a - b);
+                
+                // Propagate best performance forward
+                const bestLineData = [];
+                if (sortedIters.length > 0) {
+                    let currentBest = bestPerIter[sortedIters[0]].y;
+                    let currentBestLabel = bestPerIter[sortedIters[0]].label;
+                    
+                    // Add first point
+                    bestLineData.push({
+                        x: sortedIters[0],
+                        y: currentBest,
+                        label: currentBestLabel,
+                        isTurningPoint: true
+                    });
+
+                    for (let i = 1; i < sortedIters.length; i++) {
+                        const iter = sortedIters[i];
+                        const iterBest = bestPerIter[iter];
+                        
+                        if (iterBest.y < currentBest) {
+                            // Improvement found
+                            currentBest = iterBest.y;
+                            currentBestLabel = iterBest.label;
+                            bestLineData.push({
+                                x: iter,
+                                y: currentBest,
+                                label: currentBestLabel,
+                                isTurningPoint: true
+                            });
+                        } else {
+                            // No improvement.
+                            // User wants: "Pareto front doesn't need points everywhere, only connect turning points"
+                            // So we do NOT add a point here if it's just a flat line extension.
+                            // The line chart will automatically connect the previous turning point to the next one.
+                        }
+                    }
+                    
+                    // However, if the last point wasn't a turning point, we might want to extend the line to the end?
+                    // Or just let it end at the last turning point?
+                    // "Pareto front" usually implies the best found SO FAR.
+                    // If we skip intermediate points, the line will just connect turning points directly.
+                    // This matches "connect turning points directly".
+                }
+
+                if (chart) {
+                    chart.destroy();
+                }
+                
+                // Register plugin explicitly
+                if (typeof ChartDataLabels !== 'undefined') {
+                    Chart.register(ChartDataLabels);
+                }
+
+                chart = new Chart(ctx, {
+                    type: 'scatter',
+                    // Remove local plugins array if registered globally, or keep if specific
+                    // plugins: [ChartDataLabels], 
+                    data: {
+                        datasets: [
+                            {
+                                label: 'All Solutions',
+                                data: allSolutions,
+                                backgroundColor: 'rgba(100, 100, 100, 0.6)',
+                                borderColor: 'rgba(100, 100, 100, 0.8)',
+                                pointRadius: 4,
+                                pointHoverRadius: 6,
+                                order: 2, // Draw behind line
+                                datalabels: {
+                                    display: false // Hide labels for scatter points
+                                }
+                            },
+                            {
+                                type: 'line',
+                                label: 'Pareto Frontier (Best Perf)',
+                                data: bestLineData,
+                                borderColor: '#e74c3c', // Red line like user example
+                                backgroundColor: 'rgba(231, 76, 60, 0.05)',
+                                borderWidth: 3,
+                                pointBackgroundColor: '#e74c3c',
+                                pointBorderColor: '#fff',
+                                pointRadius: 6, // Highlight turning points
+                                pointHoverRadius: 8,
+                                tension: 0,
+                                fill: false,
+                                order: 1, // Draw on top
+                                datalabels: {
+                                    align: function(context) {
+                                        // Alternate label positions to reduce overlap
+                                        // Or base it on slope? For simplicity, alternate top/bottom or just push further away
+                                        return context.dataIndex % 2 === 0 ? 'top' : 'bottom';
+                                    },
+                                    anchor: function(context) {
+                                        return context.dataIndex % 2 === 0 ? 'start' : 'end';
+                                    },
+                                    offset: function(context) {
+                                        // Stagger distance
+                                        return context.dataIndex % 2 === 0 ? 20 : 20;
+                                    },
+                                    backgroundColor: '#fdfea3', 
+                                    color: '#333',
+                                    borderColor: '#333',
+                                    borderWidth: 1,
+                                    borderRadius: 4,
+                                    font: {
+                                        weight: 'bold',
+                                        size: 11
+                                    },
+                                    padding: 6,
+                                    formatter: function(value, context) {
+                                        return value.label;
+                                    },
+                                    display: function(context) {
+                                        return context.dataset.data[context.dataIndex].isTurningPoint;
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    plugins: [{
+                        id: 'connectorLines',
+                        afterDatasetsDraw: (chart, args, options) => {
+                            const ctx = chart.ctx;
+                            const dataset = chart.data.datasets[1]; // The Pareto line dataset
+                            const meta = chart.getDatasetMeta(1);
+                            
+                            ctx.save();
+                            ctx.beginPath();
+                            ctx.strokeStyle = '#555';
+                            ctx.lineWidth = 1;
+                            
+                            dataset.data.forEach((dataPoint, index) => {
+                                if (dataPoint.isTurningPoint) {
+                                    const element = meta.data[index];
+                                    if (!element) return;
+                                    
+                                    const { x, y } = element.tooltipPosition();
+                                    const isTop = index % 2 === 0;
+                                    const offset = 20;
+                                    
+                                    // Draw line from point to label
+                                    ctx.moveTo(x, y);
+                                    if (isTop) {
+                                        ctx.lineTo(x, y - offset);
+                                    } else {
+                                        ctx.lineTo(x, y + offset);
+                                    }
+                                    ctx.stroke();
+                                    
+                                    // Small dot at the end
+                                    ctx.beginPath();
+                                    if (isTop) {
+                                         ctx.arc(x, y - offset, 2, 0, 2 * Math.PI);
+                                    } else {
+                                         ctx.arc(x, y + offset, 2, 0, 2 * Math.PI);
+                                    }
+                                    ctx.fillStyle = '#555';
+                                    ctx.fill();
+                                }
+                            });
+                            ctx.restore();
+                        }
+                    }],
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        onClick: (e, elements) => {
+                            if (elements.length > 0) {
+                                const element = elements[0];
+                                const datasetIndex = element.datasetIndex;
+                                const index = element.index;
+                                const dataPoint = chart.data.datasets[datasetIndex].data[index];
+                                
+                                if (dataPoint.solutionKey) {
+                                    // It's a scatter point with direct solution link
+                                    displayNodeDetails(dataPoint.info);
+                                    // Also select in Cytoscape if possible
+                                    if (cy) {
+                                        cy.$(':selected').unselect();
+                                        cy.$id(dataPoint.solutionKey).select();
+                                    }
+                                } else if (datasetIndex === 1) {
+                                    // It's a line point. We need to find the matching solution.
+                                    const match = allSolutions.find(s => s.x === dataPoint.x && s.y === dataPoint.y);
+                                    if (match) {
+                                        displayNodeDetails(match.info);
+                                        if (cy) {
+                                            cy.$(':selected').unselect();
+                                            cy.$id(match.solutionKey).select();
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        plugins: {
+                            title: {
+                                display: true,
+                                text: 'Performance Analysis (Pareto Frontier)',
+                                font: { size: 16, family: "'Segoe UI', sans-serif" },
+                                padding: 20
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        const point = context.raw;
+                                        return `${point.label}: ${point.y.toFixed(4)}s (Iter ${point.x})`;
+                                    }
+                                }
+                            },
+                            legend: {
+                                position: 'bottom',
+                                labels: { usePointStyle: true, padding: 20 }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                type: 'linear',
+                                position: 'bottom',
+                                title: { display: true, text: 'Iteration', font: { weight: 'bold' } }
+                            },
+                            y: {
+                                title: { display: true, text: 'Performance (Runtime)', font: { weight: 'bold' } }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+    </script>
+</body>
+</html>

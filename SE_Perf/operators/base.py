@@ -9,6 +9,7 @@ SE Operators Base Classes
 from __future__ import annotations
 
 import abc
+import random
 import re
 from typing import Any
 
@@ -275,6 +276,176 @@ Your core philosophy is **CORRECTNESS FIRST, THEN PERFORMANCE**.
         header = str(chosen_label or latest_key).strip()
         body = fmt_value(latest_data, 0)
         return f"{header}\n{body}".strip() if header else body
+
+    def _weighted_select_labels(
+        self, entry: dict[str, Any], k: int = 1, allowed_labels: list[str] | None = None
+    ) -> list[str]:
+        """基于 performance 的线性加权采样选择子标签，performance 越低权重越高。
+        若提供 allowed_labels，则仅在该集合中进行采样（忽略不存在的标签）。
+        """
+        if not isinstance(entry, dict):
+            return []
+        items: list[tuple[str, float]] = []
+        for subkey, subval in entry.items():
+            if subkey == "problem" or not isinstance(subval, dict):
+                continue
+            if allowed_labels is not None:
+                lab = str(subkey)
+                lab2 = str(subval.get("label")) if isinstance(subval.get("label"), str) else None
+                if lab not in allowed_labels and (lab2 is None or lab2 not in allowed_labels):
+                    continue
+            perf = subval.get("performance")
+            try:
+                perf_val = float(perf) if perf is not None else 1.0
+            except Exception:
+                perf_val = 1.0
+            items.append((str(subkey), perf_val))
+        if not items:
+            return []
+        eps = 1e-9
+        selected: list[str] = []
+        remaining = items.copy()
+        for _ in range(min(k, len(remaining))):
+            weights = [max(0.001, 1.0 / max(eps, perf)) for _, perf in remaining]
+            total = sum(weights)
+            if total <= 0:
+                choice = random.choice(remaining)[0]
+            else:
+                weights = [w / total for w in weights]
+                r = random.random()
+                s = 0.0
+                choice = remaining[-1][0]
+                for (label_key, perf), w in zip(remaining, weights):
+                    s += w
+                    if r <= s:
+                        choice = label_key
+                        break
+            selected.append(choice)
+            remaining = [it for it in remaining if it[0] != choice]
+        return selected
+
+    def _random_select_labels(
+        self, entry: dict[str, Any], k: int = 1, allowed_labels: list[str] | None = None
+    ) -> list[str]:
+        if not isinstance(entry, dict):
+            return []
+        candidates: list[str] = []
+        for subkey, subval in entry.items():
+            if subkey == "problem" or not isinstance(subval, dict):
+                continue
+            if allowed_labels is not None:
+                lab = str(subkey)
+                lab2 = str(subval.get("label")) if isinstance(subval.get("label"), str) else None
+                if lab not in allowed_labels and (lab2 is None or lab2 not in allowed_labels):
+                    continue
+            candidates.append(str(subkey))
+        if not candidates:
+            return []
+        k = min(k, len(candidates))
+        try:
+            return random.sample(candidates, k)
+        except Exception:
+            out: list[str] = []
+            pool = candidates.copy()
+            for _ in range(k):
+                choice = random.choice(pool)
+                out.append(choice)
+                pool = [c for c in pool if c != choice]
+                if not pool:
+                    break
+            return out
+
+    def _get_selection_mode(self, step_config: dict[str, Any]) -> str:
+        try:
+            v = (step_config or {}).get("selection_mode")
+            if isinstance(v, str) and v.strip():
+                m = v.strip().lower()
+                if m in ("weighted", "random"):
+                    return m
+            g = (self.config or {}).get("operator_selection_mode")
+            if isinstance(g, str) and g.strip():
+                m = g.strip().lower()
+                if m in ("weighted", "random"):
+                    return m
+        except Exception:
+            pass
+        return "weighted"
+
+    def _resolve_label_subkey(self, entry: dict[str, Any], label: str) -> str | None:
+        """将外部提供的标签解析为 entry 的子键。
+        优先匹配子键名，其次匹配子项内部的 `label` 字段。
+        """
+        if not isinstance(entry, dict):
+            return None
+        lab = str(label)
+        if lab in entry and isinstance(entry.get(lab), dict):
+            return lab
+        for subkey, subval in entry.items():
+            if subkey == "problem" or not isinstance(subval, dict):
+                continue
+            if str(subval.get("label")) == lab:
+                return str(subkey)
+        return None
+
+    def _select_source_labels(self, entry: dict[str, Any], step_config: dict[str, Any], required_n: int) -> list[str]:
+        """统一选择源轨迹标签。
+        规则：
+        - 若 `inputs` 标签数目 == required_n：直接使用 `inputs`
+        - 若 `inputs` 标签数目 >  required_n：在 `inputs` 范围内加权采样 required_n 个
+        - 若 `inputs` 标签数目 <  required_n：先使用已有 `inputs`，剩余从整个 entry 中加权采样补齐
+        返回 entry 子键名列表，唯一且最多 required_n 个。
+        """
+        if not isinstance(entry, dict):
+            return []
+        inputs = step_config.get("inputs") or []
+        provided_labels = [str(i.get("label")) for i in inputs if isinstance(i, dict) and i.get("label")]
+        # 解析为 entry 子键
+        resolved = []
+        seen = set()
+        for lab in provided_labels:
+            subkey = self._resolve_label_subkey(entry, lab)
+            if subkey and subkey not in seen:
+                resolved.append(subkey)
+                seen.add(subkey)
+
+        need = max(0, int(required_n))
+        count = len(resolved)
+        if count == need:
+            return resolved
+        if count > need:
+            mode = self._get_selection_mode(step_config)
+            if mode == "random":
+                sampled = self._random_select_labels(entry, k=need, allowed_labels=resolved)
+            else:
+                sampled = self._weighted_select_labels(entry, k=need, allowed_labels=resolved)
+            # 去重并返回
+            out = []
+            used = set()
+            for s in sampled:
+                if s not in used:
+                    out.append(s)
+                    used.add(s)
+            return out
+
+        # count < need：先用已有，再补齐
+        out = list(resolved)
+        used = set(out)
+        # 构建候选集合（排除已选）
+        all_subkeys = [str(k) for k, v in entry.items() if k != "problem" and isinstance(v, dict)]
+        remaining = [k for k in all_subkeys if k not in used]
+        if remaining:
+            mode = self._get_selection_mode(step_config)
+            if mode == "random":
+                sampled_more = self._random_select_labels(entry, k=need - count, allowed_labels=remaining)
+            else:
+                sampled_more = self._weighted_select_labels(entry, k=need - count, allowed_labels=remaining)
+            for s in sampled_more:
+                if s not in used:
+                    out.append(s)
+                    used.add(s)
+                if len(out) >= need:
+                    break
+        return out[:need]
 
     @abc.abstractmethod
     def get_name(self) -> str:

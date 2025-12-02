@@ -14,6 +14,7 @@ Plan Operator (LLM-based)
 
 import json
 import re
+import textwrap
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -112,15 +113,36 @@ class PlanOperator(TemplateOperator):
                 pass
 
         def _build_prompts(problem_text: str, k: int) -> tuple[str, str]:
-            """构建严格 JSON 输出的系统/用户提示词。"""
-            sys_prompt = (
-                "You are an expert performance-focused algorithm designer. "
-                "Given a problem description, design EXACTLY K diverse solution approaches as short English paragraphs. "
-                "Constraints: (1) correctness-first then performance; (2) diversify algorithmic paradigm, data structures, I/O, precomputation; "
-                '(3) NO code blocks; (4) Return ONLY valid JSON with schema {"strategies": [string, ...]} without extra text or backticks; '
-                "(5) The array length MUST equal K."
-            )
-            user_prompt = json.dumps({"problem": problem_text, "K": k}, ensure_ascii=False)
+            """
+            构建提示词，强调算法多样性、复杂度分析和严格的 JSON 格式。
+            """
+            sys_prompt = """You are a world-class Algorithm Engineer and Competitive Programmer. Your task is to design EXACTLY K distinct, high-performance algorithmic strategies for a given problem.
+
+Guidelines:
+1. **Diversity**: The strategies MUST differ in algorithmic paradigms (e.g., Dynamic Programming, Greedy, BFS/DFS, Two Pointers, Sliding Window, Bit Manipulation) or Data Structures.
+2. **Performance**: Prioritize optimal Time and Space Complexity. Avoid naive brute-force unless unavoidable.
+3. **Content**: Each strategy description must be a concise English paragraph including: 
+- The core logic/heuristic.
+- Key data structures.
+- Expected Time Complexity (Big-O) and Space Complexity.
+4. **Format**: Return the JSON object wrapped in a Markdown code block with the language tag 'json'.
+- Structure:
+    ```json
+    {"strategies": [string, string, ...]}
+    ```
+- The array must contain exactly K strings.
+- NO conversational text outside the code block."""
+
+            # 在 User Prompt 中再次强调 K，防止模型忽略
+            user_prompt = f"""
+Instruction: Generate {k} diverse high-performance strategies.
+
+Problem Description:
+{problem_text}
+
+Required Count: {k}
+        """
+
             return sys_prompt, user_prompt
 
         def _extract_json_fragment(text: str) -> str:
@@ -150,7 +172,7 @@ class PlanOperator(TemplateOperator):
             if not isinstance(arr, list):
                 return None
             vals = [str(x).strip() for x in arr if isinstance(x, (str, int, float))]
-            return vals if len(vals) == k and all(v for v in vals) else None
+            return vals if len(vals) >= k and all(v for v in vals) else None
 
         def _llm_strategies_with_retry(problem_text: str, k: int, max_attempts: int = 3) -> list[str]:
             """调用LLM并进行格式校验，失败则重试，最终不足则返回部分。"""
@@ -185,6 +207,17 @@ class PlanOperator(TemplateOperator):
             else:
                 body = "Adopt divide-and-conquer or search; structure recursion/iteration for clarity and speed."
             return f"{header}\n{body}"
+
+        def _build_additional_requirements(strategy_text: str) -> str:
+            """按 crossover 风格包装为 additional_requirements 文本，加入 PLAN STRATEGY 头部。"""
+            st = textwrap.indent((strategy_text or "").strip(), "  ")
+            req = f"""
+### STRATEGY MODE: PLAN STRATEGY
+You must strictly follow and implement the outlined approach below.
+
+{st}
+"""
+            return req
 
         # 并发生成：每个实例生成 K 条策略
         def _work(inst_name: str) -> tuple[str, list[str]]:
@@ -224,9 +257,14 @@ class PlanOperator(TemplateOperator):
                     except Exception:
                         pass
 
+        # 包装为 additional_requirements 形式
         plans: list[dict[str, Any]] = []
         for lb in labels:
-            plans.append({"label": str(lb), "per_instance_requirements": per_label_content.get(str(lb), {})})
+            per_inst = per_label_content.get(str(lb), {})
+            formatted: dict[str, str] = {}
+            for inst_name, txt in (per_inst or {}).items():
+                formatted[str(inst_name)] = _build_additional_requirements(str(txt))
+            plans.append({"label": str(lb), "per_instance_requirements": formatted})
 
         return {"plans": plans, "generated_count": total_generated}
 
