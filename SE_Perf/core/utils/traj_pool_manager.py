@@ -162,6 +162,7 @@ class TrajPoolManager:
             "source_dir": traj_info.get("source_dir"),
             "code": traj_info.get("patch_content") or traj_info.get("content"),
             "content": traj_info.get("content"),
+            "trajectory_raw": traj_info.get("trajectory_raw"),
             "iteration": traj_info.get("iteration"),
         }
         self.add_or_update_instance(inst_name, entry)
@@ -356,6 +357,7 @@ class TrajPoolManager:
                     "summary": summary,
                     "problem_description": item.get("problem_description"),
                     "code": item["patch_content"],
+                    "trajectory_raw": item.get("trajectory_content"),
                     "source_entry_labels": item.get("source_entry_labels"),
                     "operator_name": item.get("operator_name"),
                 }
@@ -401,6 +403,7 @@ class TrajPoolManager:
                         "performance": res.get("performance"),
                         "source_dir": res.get("source_dir"),
                         "code": res.get("code"),
+                        "trajectory_raw": res.get("trajectory_raw"),
                         "iteration": res.get("iteration"),
                         "source_entry_labels": res.get("source_entry_labels"),
                         "operator_name": res.get("operator_name"),
