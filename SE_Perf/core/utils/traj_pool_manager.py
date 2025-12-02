@@ -162,7 +162,12 @@ class TrajPoolManager:
             "source_dir": traj_info.get("source_dir"),
             "code": traj_info.get("patch_content") or traj_info.get("content"),
             "content": traj_info.get("content"),
-            "trajectory_raw": traj_info.get("trajectory_raw"),
+            # trajectory_raw 统一以 JSON 对象存储，避免纯字符串
+            "trajectory_raw": (
+                json.loads(traj_info.get("trajectory_raw"))
+                if isinstance(traj_info.get("trajectory_raw"), str)
+                else traj_info.get("trajectory_raw")
+            ),
             "iteration": traj_info.get("iteration"),
         }
         self.add_or_update_instance(inst_name, entry)
@@ -348,6 +353,20 @@ class TrajPoolManager:
                     pass
 
                 # 构建完整的轨迹信息对象
+                # 解析 .tra 原始内容为 JSON 对象，避免以纯字符串存储
+                trajectory_raw_obj = None
+                try:
+                    raw = item.get("trajectory_content")
+                    if isinstance(raw, str):
+                        trajectory_raw_obj = json.loads(raw)
+                    else:
+                        trajectory_raw_obj = raw
+                except Exception:
+                    try:
+                        trajectory_raw_obj = {"_raw_text": str(item.get("trajectory_content"))}
+                    except Exception:
+                        trajectory_raw_obj = None
+
                 traj_info = {
                     "label": item["label"],
                     "instance_name": item["instance_name"],
@@ -357,7 +376,7 @@ class TrajPoolManager:
                     "summary": summary,
                     "problem_description": item.get("problem_description"),
                     "code": item["patch_content"],
-                    "trajectory_raw": item.get("trajectory_content"),
+                    "trajectory_raw": trajectory_raw_obj,
                     "source_entry_labels": item.get("source_entry_labels"),
                     "operator_name": item.get("operator_name"),
                 }
