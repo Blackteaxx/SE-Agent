@@ -254,6 +254,9 @@ Your core philosophy is **CORRECTNESS FIRST, THEN PERFORMANCE**.
             if isinstance(val, dict):
                 lines: list[str] = []
                 for k, v in val.items():
+                    # 不格式化原始轨迹，避免将巨大对话内容塞入提示文本
+                    if str(k) == "trajectory_raw":
+                        continue
                     key_line = f"{indent_str(level)}{k}:"
                     if isinstance(v, (dict, list)) or (isinstance(v, str) and "\n" in v):
                         lines.append(key_line)
