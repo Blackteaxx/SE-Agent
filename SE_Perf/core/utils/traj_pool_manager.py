@@ -8,6 +8,7 @@ Trajectory Pool Manager (Label-based)
 
 import json
 import os
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -79,31 +80,46 @@ class TrajPoolManager:
             raise
 
     def get_instance(self, instance_name: str) -> dict[str, Any] | None:
+        """获取指定实例的所有轨迹数据。"""
         pool_data = self.load_pool()
         return pool_data.get(instance_name)
 
     def get_trajectory(self, label: str, instance_name: str | None = None) -> dict[str, Any] | None:
+        """
+        通过标签获取单个轨迹。
+
+        Args:
+            label: 轨迹标签。
+            instance_name: (可选) 实例名称。如果提供，仅在该实例内查找。
+
+        Returns:
+            找到的轨迹字典，否则返回 None。
+        """
         pool_data = self.load_pool()
+
+        def _find_in_entry(entry_data: dict[str, Any]) -> dict[str, Any] | None:
+            """在单个实例条目内查找轨迹。"""
+            if not isinstance(entry_data, dict):
+                return None
+            # 优先匹配子键名
+            if label in entry_data and isinstance(entry_data[label], dict):
+                return entry_data[label]
+            # 其次匹配子条目内的 "label" 字段
+            for subkey, subval in entry_data.items():
+                if subkey == "problem":
+                    continue
+                if isinstance(subval, dict) and str(subval.get("label")) == label:
+                    return subval
+            return None
+
         if instance_name:
             entry = pool_data.get(instance_name)
-            if isinstance(entry, dict):
-                if label in entry and isinstance(entry[label], dict):
-                    return entry[label]
-                for subkey, subval in entry.items():
-                    if subkey == "problem":
-                        continue
-                    if isinstance(subval, dict) and subval.get("label") == label:
-                        return subval
-            return None
-        for inst_name, entry in pool_data.items():
-            if isinstance(entry, dict):
-                if label in entry and isinstance(entry[label], dict):
-                    return entry[label]
-                for subkey, subval in entry.items():
-                    if subkey == "problem":
-                        continue
-                    if isinstance(subval, dict) and subval.get("label") == label:
-                        return subval
+            return _find_in_entry(entry) if entry else None
+
+        for entry in pool_data.values():
+            found = _find_in_entry(entry)
+            if found:
+                return found
         return None
 
     def get_all_trajectories(self) -> dict[str, Any]:
@@ -111,49 +127,101 @@ class TrajPoolManager:
         return self.load_pool()
 
     def get_all_labels(self, instance_name: str | None = None) -> list[str]:
-        pool_data = self.load_pool()
-        labels: list[str] = []
-        target_instance = instance_name if instance_name else next(iter(pool_data.keys()), None)
+        """
+        获取所有唯一的轨迹标签。
 
-        if target_instance:
-            entry = pool_data.get(target_instance) or {}
+        Args:
+            instance_name: (可选) 如果提供，仅返回该实例的标签。
+
+        Returns:
+            唯一的轨迹标签列表。
+        """
+        pool_data = self.load_pool()
+        labels: set[str] = set()
+
+        def _extract_labels_from_entry(entry: dict[str, Any]):
             if isinstance(entry, dict):
                 for subkey, subval in entry.items():
                     if subkey == "problem":
                         continue
                     if isinstance(subval, dict):
-                        if subval.get("label"):
-                            labels.append(str(subval.get("label")))
+                        # 优先使用 "label" 字段
+                        if "label" in subval:
+                            labels.add(str(subval["label"]))
+                        # 否则使用子键名作为标签
                         else:
-                            labels.append(str(subkey))
+                            labels.add(subkey)
 
-        return labels
+        
+
+        if instance_name:
+            entry = pool_data.get(instance_name)
+            if entry:
+                _extract_labels_from_entry(entry)
+        else:
+            for entry in pool_data.values():
+                _extract_labels_from_entry(entry)
+
+        return sorted(list(labels))
 
     def add_or_update_instance(self, instance_name: str, entry: dict[str, Any]) -> None:
+        """
+        向指定实例添加或更新一个轨迹条目。
+
+        注意：此方法会立即加载和保存整个池，I/O 开销较大。
+        对于批量操作，请使用 `summarize_and_add_trajectories`。
+
+        Args:
+            instance_name: 实例名称。
+            entry: 要添加或更新的轨迹条目，必须包含 'label'。
+        """
         pool_data = self.load_pool()
         inst_key = str(instance_name)
         existing = pool_data.get(inst_key) or {}
-        # 保持顶层 problem
+
+        # 保持顶层 "problem" 描述
         problem_text = entry.get("problem") or existing.get("problem")
         merged = {**existing}
         if problem_text is not None:
             merged["problem"] = problem_text
-        # 将本次迭代的 label 作为子键，保存条目内容
+
+        # 将本次迭代的 "label" 作为子键，保存条目内容
         iter_label = entry.get("label")
         if not iter_label:
-            raise ValueError("缺少 label 用于实例条目的子键")
+            raise ValueError("缺少 'label' 用于实例条目的子键")
+
         detail = entry.copy()
-        detail.pop("problem", None)
+        detail.pop("problem", None)  # 避免在子条目中重复存储
         merged[str(iter_label)] = detail
         pool_data[inst_key] = merged
+
         self.save_pool(pool_data)
         self.logger.info(f"已更新实例 '{instance_name}' 的条目: {iter_label}")
 
     def add_trajectory(self, label: str, traj_info: dict[str, Any], instance_name: str | None = None) -> None:
-        pool_data = self.load_pool()
+        """
+        添加单条轨迹记录。
+
+        Args:
+            label: 轨迹标签。
+            traj_info: 轨迹信息字典。
+            instance_name: (可选) 实例名称。
+        """
         inst_name = str(instance_name or traj_info.get("instance_name") or "")
         if not inst_name:
             raise ValueError("缺少 instance_name，无法添加轨迹")
+
+        # 统一处理 trajectory_raw，确保其为 JSON 对象
+        raw_content = traj_info.get("trajectory_raw")
+        if isinstance(raw_content, str):
+            try:
+                trajectory_raw = json.loads(raw_content)
+            except json.JSONDecodeError:
+                self.logger.warning(f"无法将 trajectory_raw 解析为 JSON (标签: {label})，将作为原始文本存储。")
+                trajectory_raw = {"_raw_text": raw_content}
+        else:
+            trajectory_raw = raw_content
+
         entry = {
             "problem": traj_info.get("problem_description") or traj_info.get("problem_statement"),
             "label": label,
@@ -161,13 +229,7 @@ class TrajPoolManager:
             "performance": traj_info.get("performance"),
             "source_dir": traj_info.get("source_dir"),
             "code": traj_info.get("patch_content") or traj_info.get("content"),
-            "content": traj_info.get("content"),
-            # trajectory_raw 统一以 JSON 对象存储，避免纯字符串
-            "trajectory_raw": (
-                json.loads(traj_info.get("trajectory_raw"))
-                if isinstance(traj_info.get("trajectory_raw"), str)
-                else traj_info.get("trajectory_raw")
-            ),
+            "trajectory_raw": trajectory_raw,
             "iteration": traj_info.get("iteration"),
         }
         self.add_or_update_instance(inst_name, entry)
@@ -345,29 +407,23 @@ class TrajPoolManager:
                 )
 
                 # 在总结对象中附加来源标签，便于后续分析
-                try:
-                    src_labels = item.get("source_entry_labels")
-                    if src_labels is not None:
-                        summary["source_entry_labels"] = list(src_labels)
-                except Exception:
-                    pass
+                if (src_labels := item.get("source_entry_labels")) is not None:
+                    summary["source_entry_labels"] = list(src_labels)
 
-                # 构建完整的轨迹信息对象
-                # 解析 .tra 原始内容为 JSON 对象，避免以纯字符串存储
-                trajectory_raw_obj = None
-                try:
-                    raw = item.get("trajectory_content")
-                    if isinstance(raw, str):
-                        trajectory_raw_obj = json.loads(raw)
-                    else:
-                        trajectory_raw_obj = raw
-                except Exception:
+                # 解析 .tra 原始内容为 JSON 对象，如果失败则作为原始文本
+                raw_content = item.get("trajectory_content")
+                if isinstance(raw_content, str):
                     try:
-                        trajectory_raw_obj = {"_raw_text": str(item.get("trajectory_content"))}
-                    except Exception:
-                        trajectory_raw_obj = None
+                        trajectory_raw_obj = json.loads(raw_content)
+                    except json.JSONDecodeError:
+                        self.logger.warning(
+                            f"无法将 trajectory_raw 解析为 JSON (标签: {item.get('label')})，将作为原始文本存储。"
+                        )
+                        trajectory_raw_obj = {"_raw_text": raw_content}
+                else:
+                    trajectory_raw_obj = raw_content
 
-                traj_info = {
+                return {
                     "label": item["label"],
                     "instance_name": item["instance_name"],
                     "iteration": item["iteration"],
@@ -380,7 +436,6 @@ class TrajPoolManager:
                     "source_entry_labels": item.get("source_entry_labels"),
                     "operator_name": item.get("operator_name"),
                 }
-                return traj_info
             except Exception as e:
                 self.logger.error(f"并行轨迹总结任务失败 (标签 '{item.get('label')}'): {e}")
                 return None
@@ -392,7 +447,7 @@ class TrajPoolManager:
             )
             self.logger.debug(f"并行轨迹总结并发数: {max_workers}")
 
-            newly_completed_trajectories: dict[str, Any] = {}
+            newly_completed_trajectories = defaultdict(list)
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_label = {
                     executor.submit(_summarize_item, item): item["label"] for item in trajectories_to_process
@@ -400,11 +455,9 @@ class TrajPoolManager:
                 for future in as_completed(future_to_label):
                     label = future_to_label[future]
                     try:
-                        result = future.result()
-                        if result:
-                            inst_name = result.get("instance_name")
-                            if inst_name:
-                                newly_completed_trajectories[inst_name] = result
+                        if result := future.result():
+                            if inst_name := result.get("instance_name"):
+                                newly_completed_trajectories[inst_name].append(result)
                     except Exception as e:
                         self.logger.error(f"获取总结结果失败 (标签 '{label}'): {e}")
 
@@ -412,27 +465,37 @@ class TrajPoolManager:
                 self.logger.warning("没有成功生成任何轨迹总结。")
                 return 0
 
-            written = 0
-            for inst_name, res in newly_completed_trajectories.items():
-                try:
-                    entry = {
-                        "problem": res.get("problem_description"),
-                        "label": res.get("label"),
-                        "summary": res.get("summary"),
-                        "performance": res.get("performance"),
-                        "source_dir": res.get("source_dir"),
-                        "code": res.get("code"),
-                        "trajectory_raw": res.get("trajectory_raw"),
-                        "iteration": res.get("iteration"),
-                        "source_entry_labels": res.get("source_entry_labels"),
-                        "operator_name": res.get("operator_name"),
-                    }
-                    self.add_or_update_instance(inst_name, entry)
-                    written += 1
-                except Exception as we:
-                    self.logger.error(f"写入轨迹池失败: 实例 '{inst_name}' 标签 '{res.get('label')}': {we}")
-            self.logger.info(f"成功并行生成并向轨迹池添加了 {written} 条实例-迭代条目。")
-            return written
+            # --- 批量写入 --- #
+            pool_data = self.load_pool()
+            written_count = 0
+            for inst_name, results in newly_completed_trajectories.items():
+                for res in results:
+                    try:
+                        inst_key = str(inst_name)
+                        existing = pool_data.get(inst_key) or {}
+                        problem_text = res.get("problem_description") or existing.get("problem")
+                        merged = {**existing}
+                        if problem_text is not None:
+                            merged["problem"] = problem_text
+
+                        iter_label = res.get("label")
+                        if not iter_label:
+                            self.logger.warning(f"跳过缺少 'label' 的轨迹: {res}")
+                            continue
+
+                        detail = res.copy()
+                        detail.pop("problem_description", None)
+                        merged[str(iter_label)] = detail
+                        pool_data[inst_key] = merged
+                        written_count += 1
+                    except Exception as we:
+                        self.logger.error(f"准备写入轨迹池失败: 实例 '{inst_name}' 标签 '{res.get('label')}': {we}")
+
+            if written_count > 0:
+                self.save_pool(pool_data)
+
+            self.logger.info(f"成功并行生成并向轨迹池添加了 {written_count} 条实例-迭代条目。")
+            return written_count
 
         except Exception as e:
             self.logger.error(f"并行生成与批量写入轨迹总结失败: {e}")
