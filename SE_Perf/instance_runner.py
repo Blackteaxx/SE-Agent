@@ -24,7 +24,6 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 import yaml
 
@@ -41,12 +40,12 @@ def _ensure_abs(path_like: str | Path, base: Path) -> Path:
     return p if p.is_absolute() else (base / p)
 
 
-def _discover_instances(instances_dir: Path) -> List[Path]:
+def _discover_instances(instances_dir: Path) -> list[Path]:
     """枚举实例 JSON 文件。"""
     return sorted(instances_dir.glob("*.json"))
 
 
-def _prepare_temp_space(inst_files: List[Path], tmp_root: Path) -> Dict[str, Path]:
+def _prepare_temp_space(inst_files: list[Path], tmp_root: Path) -> dict[str, Path]:
     """
     生成临时空间结构：
     - tmp_root/instance_name/instance_name.json
@@ -54,7 +53,7 @@ def _prepare_temp_space(inst_files: List[Path], tmp_root: Path) -> Dict[str, Pat
     返回：{instance_name: tmp_instance_dir}
     """
     tmp_root.mkdir(parents=True, exist_ok=True)
-    mapping: Dict[str, Path] = {}
+    mapping: dict[str, Path] = {}
     for fp in inst_files:
         name = fp.stem
         inst_dir = tmp_root / name
@@ -66,10 +65,7 @@ def _prepare_temp_space(inst_files: List[Path], tmp_root: Path) -> Dict[str, Pat
 
 
 def _write_per_instance_config(
-    base_cfg: dict,
-    tmp_instance_dir: Path,
-    instance_name: str,
-    config_out_path: Path,
+    base_cfg: dict, tmp_instance_dir: Path, instance_name: str, config_out_path: Path, timestamp: str
 ) -> Path:
     """
     基于原始 SE 配置生成“单实例”配置：
@@ -83,9 +79,9 @@ def _write_per_instance_config(
     cfg["instances"] = instances
 
     orig_out = str(cfg.get("output_dir", "trajectories_perf/run_{timestamp}")).rstrip("/")
-    orig_out_no_ts = orig_out.replace("{timestamp}", "")
-    orig_out_no_ts = orig_out_no_ts.rstrip("_-.")
-    cfg["output_dir"] = f"{orig_out_no_ts}/{instance_name}"
+    # 使用调用者传入的已生成 timestamp 替换占位符
+    final_base_out = orig_out.replace("{timestamp}", timestamp)
+    cfg["output_dir"] = f"{final_base_out}/{instance_name}"
 
     config_out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(config_out_path, "w", encoding="utf-8") as f:
@@ -93,7 +89,7 @@ def _write_per_instance_config(
     return config_out_path
 
 
-def _build_perf_cmd(config_path: Path, mode: str, project_root: Path) -> List[str]:
+def _build_perf_cmd(config_path: Path, mode: str, project_root: Path) -> list[str]:
     """
     构建调用 perf_run.py 的命令（不执行，仅返回命令列表）。
     """
@@ -136,20 +132,21 @@ def main():
         print(f"未在 {inst_dir} 找到实例 JSON 文件")
         sys.exit(1)
 
-    # 临时空间：SE_Perf/tmp/instance_runner/<timestamp-like>
-    tmp_root = project_root / "SE_Perf" / "tmp" / "instance_runner"
+    # 临时空间：tmp/instance_runner/<timestamp-like>
+    tmp_root = project_root / "tmp" / "instance_runner"
     tmp_root.mkdir(parents=True, exist_ok=True)
 
     mapping = _prepare_temp_space(inst_files, tmp_root)
 
-    base_out_str = str((base_cfg.get("output_dir") or "trajectories_perf/run_{timestamp}")).rstrip("/")
-    base_root_dir = Path(base_out_str.replace("{timestamp}", "").rstrip("_-."))
+    # 生成 timestamp 并替换输出目录
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_root_dir = base_cfg["output_dir"].replace("{timestamp}", timestamp)
 
     # 构建 per-instance 配置文件并运行
-    per_instance_cfg_paths: Dict[str, Path] = {}
+    per_instance_cfg_paths: dict[str, Path] = {}
     for name, tmp_inst_dir in mapping.items():
         cfg_out = tmp_inst_dir / "se_config.yaml"
-        per_instance_cfg_paths[name] = _write_per_instance_config(base_cfg, tmp_inst_dir, name, cfg_out)
+        per_instance_cfg_paths[name] = _write_per_instance_config(base_cfg, tmp_inst_dir, name, cfg_out, timestamp)
 
     # 并行执行（简单的批次调度：窗口大小 = max_parallel）
     names = list(per_instance_cfg_paths.keys())
@@ -162,7 +159,7 @@ def main():
 
     while i < total:
         batch = names[i : i + max_parallel]
-        procs: List[Tuple[str, subprocess.Popen]] = []
+        procs: list[tuple[str, subprocess.Popen]] = []
         # 启动当前批次
         for name in batch:
             cfg_path = per_instance_cfg_paths[name]
@@ -176,8 +173,6 @@ def main():
                         cmd,
                         cwd=str(project_root),
                         text=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
                     )
                 except Exception as e:
                     print(f"❌ 启动失败: {name}（{e}）")
@@ -200,9 +195,9 @@ def main():
 
     if not args.dry_run:
         try:
-            agg_pool: Dict[str, dict] = {}
-            agg_hist: Dict[str, dict] = {}
-            agg_final: Dict[str, str] = {}
+            agg_pool: dict[str, dict] = {}
+            agg_hist: dict[str, dict] = {}
+            agg_final: dict[str, str] = {}
 
             for name in names:
                 inst_root = base_root_dir / name
@@ -210,7 +205,7 @@ def main():
                 preds_path = inst_root / "preds.json"
                 final_path = inst_root / "final.json"
 
-                pool_data: Dict[str, dict] = {}
+                pool_data: dict[str, dict] = {}
                 try:
                     if pool_path.exists():
                         pool_data = json.loads(pool_path.read_text(encoding="utf-8")) or {}
@@ -223,7 +218,7 @@ def main():
                     if preds_path.exists():
                         preds = json.loads(preds_path.read_text(encoding="utf-8")) or {}
                         for inst_id, entries in preds.items():
-                            iteration_map: Dict[str, dict] = {}
+                            iteration_map: dict[str, dict] = {}
                             for e in entries or []:
                                 it = e.get("iteration")
                                 code = e.get("code") or ""

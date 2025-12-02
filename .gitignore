@@ -119,3 +119,4 @@ preds
 trajectories_perf/*
 instances/
 configs/*
+tmp/*

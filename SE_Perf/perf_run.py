@@ -692,6 +692,7 @@ def main():
                                 processor = TrajectoryProcessor()
                                 iteration_dir = Path(iteration_output_dir)
                                 tra_stats = processor.process_iteration_directory(iteration_dir)
+
                                 if tra_stats and tra_stats.get("total_tra_files", 0) > 0:
                                     _summarize_iteration_to_pool(
                                         iteration_dir,
