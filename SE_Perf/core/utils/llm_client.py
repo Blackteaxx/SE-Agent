@@ -4,10 +4,12 @@ LLM客户端模块
 为SE框架提供统一的LLM调用接口
 """
 
-from typing import Any, Dict, List, Optional  # noqa: UP035
-import re
 import json
+import os
+import re
+import threading
 import time
+from typing import Any  # noqa: UP035
 
 from openai import OpenAI
 
@@ -17,7 +19,7 @@ from core.utils.se_logger import get_se_logger
 class LLMClient:
     """LLM客户端，支持多种模型和API端点"""
 
-    def __init__(self, model_config: Dict[str, Any]):
+    def __init__(self, model_config: dict[str, Any]):
         """
         初始化LLM客户端
 
@@ -26,6 +28,8 @@ class LLMClient:
         """
         self.config = model_config
         self.logger = get_se_logger("llm_client", emoji="🤖")
+        self.token_log_path = os.getenv("SE_TOKEN_LOG_PATH")
+        self._token_lock = threading.Lock()
 
         # 验证必需的配置参数
         required_keys = ["name", "api_base", "api_key"]
@@ -56,10 +60,11 @@ class LLMClient:
 
     def call_llm(
         self,
-        messages: List[Dict[str, str]],
+        messages: list[dict[str, str]],
         temperature: float = 0.3,
-        max_tokens: Optional[int] = None,
-        enable_thinking: Optional[bool] = None,
+        max_tokens: int | None = None,
+        enable_thinking: bool | None = None,
+        usage_context: str | None = None,
     ) -> str:
         """
         调用LLM并返回响应内容
@@ -80,12 +85,10 @@ class LLMClient:
             max_tokens = self.config.get("max_output_tokens", 4000)
 
         attempt = 0
-        last_err: Optional[Exception] = None
+        last_err: Exception | None = None
         while attempt < self.max_retries:
             try:
-                self.logger.debug(
-                    f"调用LLM: {len(messages)} 条消息, temp={temperature}, max_tokens={max_tokens}"
-                )
+                self.logger.debug(f"调用LLM: {len(messages)} 条消息, temp={temperature}, max_tokens={max_tokens}")
 
                 # 规范化模型名：仅移除 openai/ 前缀，其他保持原样
                 raw_name = self.config.get("name", "")
@@ -96,7 +99,7 @@ class LLMClient:
 
                 # 使用 OpenAI 客户端调用，传入必需的参数
                 # 生成可选的 extra_body，用于控制是否启用思考模板
-                extra_body: Dict[str, Any] = {}
+                extra_body: dict[str, Any] = {}
                 if enable_thinking is not None:
                     extra_body = {"chat_template_kwargs": {"enable_thinking": bool(enable_thinking)}}
 
@@ -118,15 +121,31 @@ class LLMClient:
                         f"输出={getattr(response.usage, 'completion_tokens', '未知')}, "
                         f"总计={getattr(response.usage, 'total_tokens', '未知')}"
                     )
+                    try:
+                        if self.token_log_path:
+                            entry = {
+                                "ts": time.time(),
+                                "context": usage_context or "se_perf",
+                                "model": model_name,
+                                "prompt_tokens": getattr(response.usage, "prompt_tokens", None),
+                                "completion_tokens": getattr(response.usage, "completion_tokens", None),
+                                "total_tokens": getattr(response.usage, "total_tokens", None),
+                                "messages_chars": sum(
+                                    len(str(m.get("content", ""))) for m in messages if isinstance(m, dict)
+                                ),
+                            }
+                            with self._token_lock:
+                                with open(self.token_log_path, "a", encoding="utf-8") as f:
+                                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                    except Exception:
+                        pass
 
                 return content
 
             except Exception as e:
                 last_err = e
                 attempt += 1
-                self.logger.warning(
-                    f"LLM调用失败: {e}; attempt={attempt}/{self.max_retries}"
-                )
+                self.logger.warning(f"LLM调用失败: {e}; attempt={attempt}/{self.max_retries}")
                 if attempt < self.max_retries:
                     time.sleep(self.retry_delay)
                 else:
@@ -136,7 +155,12 @@ class LLMClient:
         raise last_err
 
     def call_with_system_prompt(
-        self, system_prompt: str, user_prompt: str, temperature: float = 0.3, max_tokens: Optional[int] = None
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.3,
+        max_tokens: int | None = None,
+        usage_context: str | None = None,
     ) -> str:
         """
         使用系统提示词和用户提示词调用LLM
@@ -152,10 +176,10 @@ class LLMClient:
         """
         messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
 
-        return self.call_llm(messages, temperature, max_tokens)
+        return self.call_llm(messages, temperature, max_tokens, usage_context=usage_context)
 
     @classmethod
-    def from_se_config(cls, se_config: Dict[str, Any], use_operator_model: bool = False) -> "LLMClient":
+    def from_se_config(cls, se_config: dict[str, Any], use_operator_model: bool = False) -> "LLMClient":
         """
         从SE框架配置创建LLM客户端
 
@@ -188,8 +212,8 @@ class TrajectorySummarizer:
         self.logger = get_se_logger("traj_summarizer", emoji="📊")
 
     def summarize_trajectory(
-        self, trajectory_content: str, patch_content: str, iteration: int, problem_description: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, trajectory_content: str, patch_content: str, iteration: int, problem_description: str | None = None
+    ) -> dict[str, Any]:
         """
         使用LLM总结轨迹内容
 
@@ -215,11 +239,15 @@ class TrajectorySummarizer:
         self.logger.debug(f"LLM用户提示词 (迭代{iteration}):\n{user_prompt}")
 
         # 重试机制：解析失败或调用失败时重试，总次数3次
-        last_error: Optional[str] = None
+        last_error: str | None = None
         for attempt in range(1, 4):
             try:
                 response = self.llm_client.call_with_system_prompt(
-                    system_prompt=system_prompt, user_prompt=user_prompt, temperature=0.7, max_tokens=10000
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    temperature=0.7,
+                    max_tokens=10000,
+                    usage_context="traj_summarizer",
                 )
                 self.logger.debug(f"LLM原始响应 (迭代{iteration}, 第{attempt}次):\n{response}")
                 # 去除思考内容
@@ -234,14 +262,10 @@ class TrajectorySummarizer:
 
             except json.JSONDecodeError as e:
                 last_error = "json_decode_error"
-                self.logger.warning(
-                    f"LLM轨迹总结解析失败: JSON解析错误 (迭代{iteration}, 第{attempt}次): {e}"
-                )
+                self.logger.warning(f"LLM轨迹总结解析失败: JSON解析错误 (迭代{iteration}, 第{attempt}次): {e}")
             except ValueError as e:
                 last_error = "invalid_json_format"
-                self.logger.warning(
-                    f"LLM轨迹总结解析失败: 无有效JSON片段 (迭代{iteration}, 第{attempt}次): {e}"
-                )
+                self.logger.warning(f"LLM轨迹总结解析失败: 无有效JSON片段 (迭代{iteration}, 第{attempt}次): {e}")
             except Exception as e:
                 last_error = "llm_call_failed"
                 self.logger.warning(f"LLM轨迹总结调用失败 (迭代{iteration}, 第{attempt}次): {e}")

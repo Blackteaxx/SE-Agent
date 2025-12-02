@@ -66,7 +66,12 @@ class BaseOperator(abc.ABC):
             max_out = model_cfg.get("max_output_tokens")
             self.logger.debug(f"LLM系统提示词:\n{system_prompt}")
             self.logger.debug(f"LLM用户提示词:\n{prompt}")
-            message = self.llm_client.call_llm(history, temperature=temp, max_tokens=max_out)
+            message = self.llm_client.call_llm(
+                history,
+                temperature=temp,
+                max_tokens=max_out,
+                usage_context=f"operator.{self.get_name()}",
+            )
             self.logger.debug(f"LLM原始响应:\n{message}")
             if message:
                 message = self.llm_client.clean_think_tags(message)
@@ -177,6 +182,7 @@ Your core philosophy is **CORRECTNESS FIRST, THEN PERFORMANCE**.
                     temperature=temp_to_use,
                     max_tokens=max_out,
                     enable_thinking=enable_thinking,
+                    usage_context=f"operator.{self.get_name()}",
                 )
                 self.logger.debug(f"LLM原始响应(重试第{attempt + 1}次):\n{message}")
                 if message:

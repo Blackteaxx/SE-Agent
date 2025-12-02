@@ -4,9 +4,11 @@ LLM 客户端，支持多种模型和API端点
 
 import json
 import logging
+import os
+import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from openai import OpenAI
 
@@ -18,10 +20,10 @@ class LLMClient:
 
     def __init__(
         self,
-        model_config: Dict[str, Any],
+        model_config: dict[str, Any],
         max_retries: int = 3,
         retry_delay: float = 1.5,
-        io_log_path: Optional[str | Path] = None,
+        io_log_path: str | Path | None = None,
         log_inputs_outputs: bool = True,
         log_sanitize: bool = True,
         request_timeout: float = 60.0,
@@ -44,7 +46,9 @@ class LLMClient:
         logger_name = f"perfagent.llm_client.{task_suffix}"
         get_se_logger(logger_name, self.io_log_path, emoji="🤖", also_stream=False)
         self.logger = logging.getLogger(logger_name)
-        
+        self.token_log_path = os.getenv("SE_TOKEN_LOG_PATH")
+        self._token_lock = threading.Lock()
+
         # 优先使用配置中的增强参数
         self.max_retries = int(model_config.get("max_retries", max_retries))
         self.retry_delay = float(model_config.get("retry_delay", retry_delay))
@@ -67,7 +71,7 @@ class LLMClient:
 
         self.logger.info(f"初始化LLM客户端: {self.config['name']}")
 
-    def _format_content_for_log(self, content: Optional[str], indent: int = 2) -> str:
+    def _format_content_for_log(self, content: str | None, indent: int = 2) -> str:
         """将文本内容格式化为多行日志，保留真实换行并缩进。
 
         Args:
@@ -88,7 +92,7 @@ class LLMClient:
         formatted.extend(f"{prefix}  {line}" for line in lines)
         return "\n".join(formatted)
 
-    def _format_messages_for_log(self, messages: List[Dict[str, str]], indent: int = 0) -> str:
+    def _format_messages_for_log(self, messages: list[dict[str, str]], indent: int = 0) -> str:
         """将消息列表格式化为多行日志，保留真实换行并缩进内容。"""
         base_prefix = " " * indent
         out_lines = [f"{base_prefix}messages:"]
@@ -100,9 +104,10 @@ class LLMClient:
 
     def call_llm(
         self,
-        messages: List[Dict[str, str]],
+        messages: list[dict[str, str]],
         temperature: float = 0.3,
-        max_tokens: Optional[int] = None,
+        max_tokens: int | None = None,
+        usage_context: str | None = None,
     ) -> str:
         """
         调用LLM并返回响应内容
@@ -123,7 +128,7 @@ class LLMClient:
             max_tokens = self.config.get("max_output_tokens", 4000)
 
         attempt = 0
-        last_err: Optional[Exception] = None
+        last_err: Exception | None = None
         while attempt < self.max_retries:
             try:
                 self.logger.debug(f"调用LLM: {len(messages)} 条消息, temp={temperature}, max_tokens={max_tokens}")
@@ -154,7 +159,7 @@ class LLMClient:
                     model="/".join(self.config["name"].split("/")[1:]),
                     messages=messages,
                     temperature=temperature,
-                        extra_body={
+                    extra_body={
                         "chat_template_kwargs": {"enable_thinking": False},
                     },
                 )
@@ -169,6 +174,24 @@ class LLMClient:
                         f"输出={getattr(response.usage, 'completion_tokens', '未知')}, "
                         f"总计={getattr(response.usage, 'total_tokens', '未知')}"
                     )
+                    try:
+                        if self.token_log_path:
+                            entry = {
+                                "ts": time.time(),
+                                "context": usage_context or "perfagent",
+                                "model": "/".join(self.config["name"].split("/")[1:]),
+                                "prompt_tokens": getattr(response.usage, "prompt_tokens", None),
+                                "completion_tokens": getattr(response.usage, "completion_tokens", None),
+                                "total_tokens": getattr(response.usage, "total_tokens", None),
+                                "messages_chars": sum(
+                                    len(str(m.get("content", ""))) for m in messages if isinstance(m, dict)
+                                ),
+                            }
+                            with self._token_lock:
+                                with open(self.token_log_path, "a", encoding="utf-8") as f:
+                                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                    except Exception:
+                        pass
 
                 # 记录原始输出
                 if self.log_inputs_outputs:
@@ -209,7 +232,7 @@ class LLMClient:
         raise last_err
 
     def call_with_system_prompt(
-        self, system_prompt: str, user_prompt: str, temperature: float = 0.3, max_tokens: Optional[int] = None
+        self, system_prompt: str, user_prompt: str, temperature: float = 0.3, max_tokens: int | None = None
     ) -> str:
         """
         使用系统提示词和用户提示词调用LLM

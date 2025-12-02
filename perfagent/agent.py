@@ -583,6 +583,7 @@ class PerfAgent:
                         messages,
                         temperature=self.config.model.temperature,
                         max_tokens=self.config.model.max_output_tokens,
+                        usage_context="perfagent.optimize",
                     )
                 else:
                     # 保守回退：LLM 未配置时返回空建议，避免引入无效 diff

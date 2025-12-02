@@ -592,6 +592,9 @@ def main():
         logger.info(f"生成timestamp: {timestamp}")
         logger.info(f"实际输出目录: {output_dir}")
 
+        # 设置全局 token 统计日志文件路径（按运行输出目录隔离）
+        os.environ["SE_TOKEN_LOG_PATH"] = str(Path(output_dir) / "token_usage.jsonl")
+
         # 初始化轨迹池管理器
         traj_pool_path = os.path.join(output_dir, "traj.pool")
 
@@ -865,6 +868,60 @@ def main():
             pass
 
         logger.info("SE PerfAgent 多迭代执行完成")
+
+        # ===== 统计 token 使用 =====
+        print("\n📊 统计 token 使用:")
+
+        # 读取并汇总本次运行的 token 使用情况
+        token_log_file = Path(output_dir) / "token_usage.jsonl"
+        total_prompt = 0
+        total_completion = 0
+        total = 0
+        by_context: dict[str, dict[str, int]] = {}
+        try:
+            if token_log_file.exists():
+                with open(token_log_file, encoding="utf-8") as f:
+                    for line in f:
+                        try:
+                            rec = json.loads(line)
+                        except Exception:
+                            continue
+                        pt = int(rec.get("prompt_tokens") or 0)
+                        ct = int(rec.get("completion_tokens") or 0)
+                        tt = int(rec.get("total_tokens") or (pt + ct))
+                        ctx = str(rec.get("context") or "unknown")
+                        total_prompt += pt
+                        total_completion += ct
+                        total += tt
+                        agg = by_context.setdefault(ctx, {"prompt": 0, "completion": 0, "total": 0})
+                        agg["prompt"] += pt
+                        agg["completion"] += ct
+                        agg["total"] += tt
+        except Exception:
+            pass
+
+        print("\n📈 Token 使用统计:")
+        print(f"  输入tokens: {total_prompt}")
+        print(f"  输出tokens: {total_completion}")
+        print(f"  总计tokens: {total}")
+        if by_context:
+            print("  按上下文分类:")
+            for ctx, vals in by_context.items():
+                print(f"    - {ctx}: prompt={vals['prompt']}, completion={vals['completion']}, total={vals['total']}")
+        logger.info(
+            json.dumps(
+                {
+                    "token_usage_total": {
+                        "prompt": total_prompt,
+                        "completion": total_completion,
+                        "total": total,
+                    },
+                    "by_context": by_context,
+                    "token_log_file": str(token_log_file),
+                },
+                ensure_ascii=False,
+            )
+        )
 
         # ================================== 依据输出选择最佳 Solution ==================================
 
