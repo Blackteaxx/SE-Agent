@@ -4,7 +4,7 @@ from flask import Flask, jsonify, render_template
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
-DATA_PATH = "/data/CodeEfficiency/SE-Agent/trajectories_perf/deepseek/deepseek-v3.1-Plan-AutoSelect-sample_20251201_161448/traj_backup.pool"
+DATA_PATH = "trajectories_perf/deepseek/deepseek-v3.1-Plan-AutoSelect-slot_20251203_131049/atcoder_abc380d_strange-mirroring/traj_backup.pool"
 
 
 def load_data():
