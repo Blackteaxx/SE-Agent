@@ -1,5 +1,5 @@
 export BACKEND_BASE_URL=http://192.168.100.115:8000,http://192.168.100.116:8000
-config_path=configs/se_perf_configs/deepseek-v3.1-Plan-AutoSelect-slot.yaml
+config_path=configs/se_perf_configs/deepseek-v3.1-AutoSelect.yaml
 
 # python SE_Perf/perf_run.py --config configs/se_perf_configs/deepseek-v3.1-Plan-AutoSelect.yaml --mode execute
 

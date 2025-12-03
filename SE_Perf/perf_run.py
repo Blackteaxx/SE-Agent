@@ -562,7 +562,9 @@ def call_perfagent(iteration_params: dict[str, Any], logger, dry_run: bool = Fal
         # 这里可以添加删除临时配置文件的逻辑，如果需要的话
         pass
 
+
 # --- 辅助函数 ---
+
 
 def _process_and_summarize(
     iter_dir: Path,
@@ -647,6 +649,7 @@ def _log_token_usage(output_dir, logger):
     total_prompt = 0
     total_completion = 0
     total = 0
+    by_context: dict[str, dict[str, int]] = {}
 
     try:
         with open(token_log_file, encoding="utf-8") as f:
@@ -655,17 +658,36 @@ def _log_token_usage(output_dir, logger):
                     rec = json.loads(line)
                     pt = int(rec.get("prompt_tokens") or 0)
                     ct = int(rec.get("completion_tokens") or 0)
+                    tt = int(rec.get("total_tokens") or (pt + ct))
+                    ctx = str(rec.get("context") or "unknown")
+
                     total_prompt += pt
                     total_completion += ct
-                    total += int(rec.get("total_tokens") or (pt + ct))
+                    total += tt
+
+                    agg = by_context.setdefault(ctx, {"prompt": 0, "completion": 0, "total": 0})
+                    agg["prompt"] += pt
+                    agg["completion"] += ct
+                    agg["total"] += tt
                 except Exception:
                     continue
 
         print("\n📈 Token 使用统计:")
         print(f"  Total: {total} (Prompt: {total_prompt}, Completion: {total_completion})")
+        if by_context:
+            print("  按上下文分类:")
+            for ctx, vals in by_context.items():
+                print(f"    - {ctx}: prompt={vals['prompt']}, completion={vals['completion']}, total={vals['total']}")
 
         logger.info(
-            json.dumps({"token_usage": {"prompt": total_prompt, "completion": total_completion, "total": total}})
+            json.dumps(
+                {
+                    "token_usage_total": {"prompt": total_prompt, "completion": total_completion, "total": total},
+                    "by_context": by_context,
+                    "token_log_file": str(token_log_file),
+                },
+                ensure_ascii=False,
+            )
         )
     except Exception:
         pass

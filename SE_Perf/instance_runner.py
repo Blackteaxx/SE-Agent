@@ -106,6 +106,129 @@ def _build_perf_cmd(config_path: Path, mode: str, project_root: Path) -> list[st
     ]
 
 
+import json
+
+
+def _log_token_usage(output_dir: Path, logger=None):
+    """
+    统计并记录 Token 使用情况
+    """
+    token_log_file = output_dir / "token_usage.jsonl"
+    if not token_log_file.exists():
+        return
+
+    total_prompt = 0
+    total_completion = 0
+    total = 0
+    by_context: dict[str, dict[str, int]] = {}
+
+    try:
+        with open(token_log_file, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                    pt = int(rec.get("prompt_tokens") or 0)
+                    ct = int(rec.get("completion_tokens") or 0)
+                    tt = int(rec.get("total_tokens") or (pt + ct))
+                    ctx = str(rec.get("context") or "unknown")
+
+                    total_prompt += pt
+                    total_completion += ct
+                    total += tt
+
+                    agg = by_context.setdefault(ctx, {"prompt": 0, "completion": 0, "total": 0})
+                    agg["prompt"] += pt
+                    agg["completion"] += ct
+                    agg["total"] += tt
+                except Exception:
+                    continue
+
+        print("\n📈 Token 使用统计:")
+        print(f"  Total: {total} (Prompt: {total_prompt}, Completion: {total_completion})")
+        if by_context:
+            print("  按上下文分类:")
+            for ctx, vals in by_context.items():
+                print(f"    - {ctx}: prompt={vals['prompt']}, completion={vals['completion']}, total={vals['total']}")
+
+        # 如果提供了 logger，则记录详细 JSON
+        if logger:
+            logger.info(
+                json.dumps(
+                    {
+                        "token_usage_total": {"prompt": total_prompt, "completion": total_completion, "total": total},
+                        "by_context": by_context,
+                        "token_log_file": str(token_log_file),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+    except Exception:
+        pass
+
+
+def _aggregate_token_stats(instance_output_dirs: list[Path], base_root_dir: str):
+    """
+    聚合所有实例的 Token 消耗
+    """
+    total_prompt = 0
+    total_completion = 0
+    total = 0
+    by_context: dict[str, dict[str, int]] = {}
+
+    print("\n=== 全局 Token 消耗统计 ===")
+
+    for inst_dir in instance_output_dirs:
+        token_file = inst_dir / "token_usage.jsonl"
+        if not token_file.exists():
+            continue
+
+        try:
+            with open(token_file, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        rec = json.loads(line)
+                        pt = int(rec.get("prompt_tokens") or 0)
+                        ct = int(rec.get("completion_tokens") or 0)
+                        tt = int(rec.get("total_tokens") or (pt + ct))
+                        ctx = str(rec.get("context") or "unknown")
+
+                        total_prompt += pt
+                        total_completion += ct
+                        total += tt
+
+                        agg = by_context.setdefault(ctx, {"prompt": 0, "completion": 0, "total": 0})
+                        agg["prompt"] += pt
+                        agg["completion"] += ct
+                        agg["total"] += tt
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+    print(f"📈 Total All Instances: {total} (Prompt: {total_prompt}, Completion: {total_completion})")
+    if by_context:
+        print("  按上下文分类 (All Instances):")
+        for ctx, vals in by_context.items():
+            print(f"    - {ctx}: prompt={vals['prompt']}, completion={vals['completion']}, total={vals['total']}")
+
+    # 尝试写入总的 token_usage.json 到根目录
+    try:
+        root_token_file = Path(base_root_dir) / "total_token_usage.json"
+        with open(root_token_file, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "token_usage_total": {"prompt": total_prompt, "completion": total_completion, "total": total},
+                    "by_context": by_context,
+                },
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
+        print(f"已保存全局 Token 统计至: {root_token_file}")
+    except Exception as e:
+        print(f"保存全局 Token 统计失败: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="按实例运行的入口脚本（控制并行度），封装调用 perf_run.py")
     parser.add_argument("--config", required=True, help="SE 配置文件路径（作为基础模板）")
@@ -135,8 +258,12 @@ def main():
         print(f"未在 {inst_dir} 找到实例 JSON 文件")
         sys.exit(1)
 
-    # 临时空间：tmp/instance_runner/<timestamp-like>
-    tmp_root = project_root / "tmp" / "instance_runner"
+    import uuid
+
+    # 临时空间：tmp/instance_runner/<timestamp-like>_<random_suffix>
+    # 添加随机后缀防止多次运行时目录冲突
+    random_suffix = str(uuid.uuid4())[:8]
+    tmp_root = project_root / "tmp" / "instance_runner" / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{random_suffix}"
     tmp_root.mkdir(parents=True, exist_ok=True)
 
     mapping = _prepare_temp_space(inst_files, tmp_root)
@@ -204,6 +331,22 @@ def main():
             print(f"聚合 final.json: {res.get('final')}")
         except Exception:
             print("批次聚合失败")
+
+        # 统计所有实例的 Token 消耗
+        try:
+            # per_instance_cfg_paths 里的 key 是 instance_name，但我们需要的是实际的输出目录
+            # 在 main 函数前面我们计算了: final_base_out = orig_out.replace("{timestamp}", timestamp)
+            # 并且 per instance 的 output_dir 是 f"{final_base_out}/{instance_name}"
+            # 所以我们可以重建这些路径
+
+            instance_output_dirs = []
+            for name in names:
+                inst_out_dir = Path(base_root_dir) / name
+                instance_output_dirs.append(inst_out_dir)
+
+            _aggregate_token_stats(instance_output_dirs, base_root_dir)
+        except Exception as e:
+            print(f"Token 聚合统计失败: {e}")
 
 
 if __name__ == "__main__":
