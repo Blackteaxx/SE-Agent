@@ -5,7 +5,7 @@
 """
 
 import json
-from typing import Any, Dict, Optional  # noqa: UP035
+from typing import Any  # noqa: UP035
 
 from core.utils.se_logger import get_se_logger
 
@@ -13,8 +13,9 @@ from core.utils.se_logger import get_se_logger
 class TrajSummarizer:
     """轨迹总结器，生成轨迹分析prompt并解析响应"""
 
-    def __init__(self):
+    def __init__(self, config: dict[str, Any] | None = None):
         self.logger = get_se_logger("traj_summarizer", emoji="📊")
+        self.config = config or {}
 
     def get_system_prompt(self) -> str:
         """
@@ -23,7 +24,19 @@ class TrajSummarizer:
         Returns:
             系统提示词字符串
         """
-        return """You are an AI assistant specialized in analyzing iterative code optimization trajectories. Your task is to analyze the provided PerfAgent execution data and provide a structured summary of the agent's problem-solving journey.
+        cfg = {}
+        try:
+            cfg = self.config.get("summarizer", {}) if isinstance(self.config, dict) else {}
+        except Exception:
+            cfg = {}
+        override = cfg.get("system_prompt")
+
+        if isinstance(override, str) and override.strip():
+            base = override
+        else:
+            base = """You are an AI assistant specialized in analyzing iterative code optimization trajectories.
+
+Your task is to analyze the provided PerfAgent execution data and provide a structured summary of the agent's problem-solving journey.
 
 The agent's guiding principle is "CORRECTNESS FIRST, THEN PERFORMANCE". Your goal is to capture this iterative process, including its successes, failures, and analytical insights.
 
@@ -56,6 +69,7 @@ Return your analysis in JSON format with the following fields:
         - "cause": "The root cause of the failure (e.g., 'Lost nested state by replacing stack with a single variable')."
     - "key_learnings": A list of generalizable insights or patterns observed (e.g., "Agent successfully identified O(n) stack solution but repeatedly broke correctness during I/O micro-optimizations.").
 """
+        return base
 
     def get_user_prompt_template(self) -> str:
         """
@@ -64,7 +78,17 @@ Return your analysis in JSON format with the following fields:
         Returns:
             用户提示词模板字符串
         """
+        cfg = {}
+        try:
+            cfg = self.config.get("summarizer", {}) if isinstance(self.config, dict) else {}
+        except Exception:
+            cfg = {}
+        override = cfg.get("user_prompt_template")
+        if isinstance(override, str) and override.strip():
+            return override
         return """Please analyze the following PerfAgent trajectory and provide insights about the solution approach.
+
+ The trajectory tried to iteratively improve a given program in {language} for the problem described below, aiming to increase its **{optimization_target}**.
 
 Problem Description:
 {problem_description}
@@ -78,7 +102,12 @@ Prediction Result (.patch/.pred file):
 Please provide your analysis in the JSON format specified in the system prompt."""
 
     def format_user_prompt(
-        self, trajectory_content: str, patch_content: str, problem_description: Optional[str] = None
+        self,
+        trajectory_content: str,
+        patch_content: str,
+        problem_description: str | None = None,
+        best_solution: str | None = None,
+        target_solution: str | None = None,
     ) -> str:
         """
         格式化用户提示词
@@ -92,13 +121,25 @@ Please provide your analysis in the JSON format specified in the system prompt."
             格式化后的用户提示词
         """
         template = self.get_user_prompt_template()
-        return template.format(
-            problem_description=problem_description or "N/A",
-            trajectory_content=trajectory_content,
-            patch_content=patch_content,
-        )
+        cfg = {}
+        try:
+            cfg = self.config.get("summarizer", {}) if isinstance(self.config, dict) else {}
+        except Exception:
+            cfg = {}
+        lang = cfg.get("language")
+        opt = cfg.get("optimization_target")
+        mapping = {
+            "problem_description": problem_description or "N/A",
+            "trajectory_content": trajectory_content,
+            "patch_content": patch_content or "",
+            "best_solution": best_solution or "",
+            "target_solution": target_solution or (patch_content or ""),
+            "language": (lang or "").strip() if isinstance(lang, str) else "",
+            "optimization_target": (opt or "").strip() if isinstance(opt, str) else "",
+        }
+        return template.format(**mapping)
 
-    def parse_response(self, response_content: str) -> Dict[str, Any]:
+    def parse_response(self, response_content: str) -> dict[str, Any]:
         """
         将LLM响应字符串严格转换为JSON对象。
 
@@ -132,13 +173,13 @@ Please provide your analysis in the JSON format specified in the system prompt."
         # 未找到可解析的JSON片段
         raise ValueError("响应中未找到可解析的JSON内容")
 
-    def validate_response_format(self, response_data: Dict[str, Any]) -> bool:
+    def validate_response_format(self, response_data: dict[str, Any]) -> bool:
         """
         暂时禁用响应格式校验，统一返回 True。
         """
         return True
 
-    def create_fallback_summary(self, trajectory_content: str, patch_content: str, iteration: int) -> Dict[str, Any]:
+    def create_fallback_summary(self, trajectory_content: str, patch_content: str, iteration: int) -> dict[str, Any]:
         """
         创建备用总结（当LLM调用失败时使用）
 

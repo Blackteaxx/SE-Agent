@@ -109,21 +109,33 @@ class AlternativeStrategyOperator(BaseOperator):
 
     def _build_additional_requirements(self, previous_approach: str) -> str:
         prev = textwrap.indent(previous_approach.strip(), "  ")
-        req = f"""
-### STRATEGY MODE: ALTERNATIVE SOLUTION STRATEGY
-You are explicitly instructed to abandon the current optimization trajectory and implement a FUNDAMENTALLY DIFFERENT approach.
-
-### PREVIOUS APPROACH SUMMARY
-{prev}
-
+        pcfg = self.config.get("prompt_config", {}) if isinstance(self.config, dict) else {}
+        opcfg = pcfg.get("alternative_strategy", {}) if isinstance(pcfg, dict) else {}
+        header = (
+            opcfg.get("header")
+            or pcfg.get("alternative_header")
+            or "### STRATEGY MODE: ALTERNATIVE SOLUTION STRATEGY\nYou are explicitly instructed to abandon the current optimization trajectory and implement a FUNDAMENTALLY DIFFERENT approach."
+        )
+        guidelines = (
+            opcfg.get("guidelines")
+            or pcfg.get("alternative_guidelines")
+            or (
+                """
 ### EXECUTION GUIDELINES
 1. **Qualitative Shift**: You must NOT provide incremental refinements, micro-optimizations, or simple bugfixes to the code above.
 2. **New Paradigm**: Switch the algorithmic paradigm or data structure entirely (e.g., if Greedy -> try DP; if List -> try Heap/Deque; if Iterative -> try Recursive).
 3. **Shift Bottleneck Focus**: If the previous attempt focused heavily on Core Algorithmics, consider an I/O-centric technique (or vice versa).
 4. **Target**: Aim for a better Big-O complexity (e.g., O(N) over O(N log N)) where feasible.
-        """
-
-        return req
+            """
+            )
+        )
+        parts = []
+        if isinstance(header, str) and header.strip():
+            parts.append(header.strip())
+        parts.append("\n### PREVIOUS APPROACH SUMMARY\n" + prev)
+        if isinstance(guidelines, str) and guidelines.strip():
+            parts.append("\n" + guidelines.strip())
+        return "\n".join(parts)
 
 
 # 注册算子

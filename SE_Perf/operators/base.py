@@ -123,8 +123,20 @@ class BaseOperator(abc.ABC):
         for attempt in range(max_retries + 1):
             try:
                 prompt, system_prompt = build_prompt_fn(attempt)
-                enforce_tail = "\n\nSTRICT FORMAT: Wrap the entire solution inside a fenced code block starting with ```py and ending with ```."
-                import_blocks = """\n\nAllowed Imports Scope: You may only import libraries within the scope defined below.
+                pcfg = self.config.get("prompt_config", {}) if isinstance(self.config, dict) else {}
+                common = pcfg.get("base_operator", {}) if isinstance(pcfg.get("base_operator"), dict) else {}
+                enforce_tail = common.get(
+                    "enforce_tail",
+                    pcfg.get(
+                        "operator_enforce_tail",
+                        "\n\nSTRICT FORMAT: Wrap the entire solution inside a fenced code block starting with ```py and ending with ```.",
+                    ),
+                )
+                import_blocks = common.get(
+                    "imports_block",
+                    pcfg.get(
+                        "operator_imports_block",
+                        """\n\nAllowed Imports Scope: You may only import libraries within the scope defined below.
 ```python
 import re
 from re import match, search, sub, split, findall, finditer
@@ -153,8 +165,14 @@ from collections import OrderedDict, defaultdict, Counter, deque
 from typing import Set, Dict, List, Optional, Tuple
 import sortedcontainers # pip install sortedcontainers
 from sortedcontainers import SortedList, SortedDict, SortedSet
-```"""
-                optimization_target = """
+```""",
+                    ),
+                )
+                optimization_target = common.get(
+                    "optimization_target",
+                    pcfg.get(
+                        "operator_optimization_target",
+                        """
 CORE TASK
 Your task is to iteratively improve a given program in python for the problem described below, aiming to increase its **runtime**.
 
@@ -165,9 +183,17 @@ Your core philosophy is **CORRECTNESS FIRST, THEN PERFORMANCE**.
 3.  **Context Utilization**: You MUST leverage all provided information (evolution history in the chat, current metrics, artifacts etc.) to make informed optimization decisions.
 4.  **Substantial Impact**: Focus on meaningful improvements that significantly impact the fitness score.
 5.  **Code Quality**: Keep the code readable, robust, and maintainable. Avoid unnecessary refactors.
-6.  **Diversity**: Explore alternative algorithms, data structures, or techniques (e.g., built-in operators, packages) when appropriate.         
-                """
-                system_prompt_use = (system_prompt or "") + enforce_tail + import_blocks + optimization_target
+6.  **Diversity**: Explore alternative algorithms, data structures, or techniques (e.g., built-in operators, packages) when appropriate.
+                        """,
+                    ),
+                )
+                system_prompt_use = system_prompt or ""
+                if isinstance(enforce_tail, str) and enforce_tail.strip():
+                    system_prompt_use += enforce_tail
+                if isinstance(import_blocks, str) and import_blocks.strip():
+                    system_prompt_use += import_blocks
+                if isinstance(optimization_target, str) and optimization_target.strip():
+                    system_prompt_use += optimization_target
 
                 history = [{"role": "system", "content": system_prompt_use}, {"role": "user", "content": prompt}]
                 max_out = original_model_cfg.get("max_output_tokens")
@@ -200,91 +226,7 @@ Your core philosophy is **CORRECTNESS FIRST, THEN PERFORMANCE**.
         return None
 
     def _format_entry(self, approaches_data: dict[str, Any]) -> str:
-        if not isinstance(approaches_data, dict) or not approaches_data:
-            return ""
-
-        def _parse_key_num(k: Any) -> int | None:
-            if isinstance(k, str):
-                if k.isdigit():
-                    try:
-                        return int(k)
-                    except Exception:
-                        return None
-                m = re.search(r"(\d+)$", k)
-                if m:
-                    try:
-                        return int(m.group(1))
-                    except Exception:
-                        return None
-            return None
-
-        candidates: list[int] = []
-        mapping: dict[int, tuple[str, Any]] = {}
-        for key, val in approaches_data.items():
-            if key == "problem":
-                continue
-            key_num = _parse_key_num(key)
-            iter_num = None
-            if isinstance(val, dict):
-                it = val.get("iteration")
-                try:
-                    if it is not None:
-                        iter_num = int(it)
-                except Exception:
-                    iter_num = None
-            use_num = iter_num if isinstance(iter_num, int) else key_num if isinstance(key_num, int) else -1
-            candidates.append(use_num)
-            mapping[use_num] = (str(key), val)
-
-        if not candidates:
-            return ""
-        latest_iteration = max(candidates)
-        latest_key, latest_data = mapping.get(latest_iteration, ("", {}))
-
-        def indent_str(level: int) -> str:
-            return "  " * level
-
-        def fmt_value(val: Any, level: int) -> str:
-            if val is None:
-                return "null"
-            if isinstance(val, (int, float)):
-                return str(val)
-            if isinstance(val, bool):
-                return "true" if val else "false"
-            if isinstance(val, str):
-                if "\n" in val:
-                    lines = val.splitlines()
-                    pad = indent_str(level + 1)
-                    return "|\n" + "\n".join(f"{pad}{line}" for line in lines)
-                return val
-            if isinstance(val, dict):
-                lines: list[str] = []
-                for k, v in val.items():
-                    # 不格式化原始轨迹，避免将巨大对话内容塞入提示文本
-                    if str(k) == "trajectory_raw":
-                        continue
-                    key_line = f"{indent_str(level)}{k}:"
-                    if isinstance(v, (dict, list)) or (isinstance(v, str) and "\n" in v):
-                        lines.append(key_line)
-                        lines.append(fmt_value(v, level + 1))
-                    else:
-                        lines.append(f"{key_line} {fmt_value(v, 0)}")
-                return "\n".join(lines)
-            if isinstance(val, list):
-                lines: list[str] = []
-                for item in val:
-                    if isinstance(item, (dict, list)) or (isinstance(item, str) and "\n" in item):
-                        lines.append(f"{indent_str(level)}-")
-                        lines.append(fmt_value(item, level + 1))
-                    else:
-                        lines.append(f"{indent_str(level)}- {fmt_value(item, 0)}")
-                return "\n".join(lines)
-            return str(val)
-
-        chosen_label = latest_data.get("label") if isinstance(latest_data, dict) else None
-        header = str(chosen_label or latest_key).strip()
-        body = fmt_value(latest_data, 0)
-        return f"{header}\n{body}".strip() if header else body
+        return TrajPoolManager.format_entry(approaches_data)
 
     def _weighted_select_labels(
         self, entry: dict[str, Any], k: int = 1, allowed_labels: list[str] | None = None

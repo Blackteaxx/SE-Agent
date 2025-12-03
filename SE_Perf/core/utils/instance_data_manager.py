@@ -25,6 +25,11 @@ class InstanceData:
         self.traj_content: str | None = None  # 原始轨迹
         self.patch_content: str | None = None  # 预测结果(.pred或.patch)
 
+        # 评估数据
+        self.passed: bool | None = None
+        self.final_performance: float | str | None = None
+        self.final_artifacts: str | None = None
+
         # 元数据
         self.available_files: list[str] = []
         self.data_sources: dict[str, str] = {}
@@ -64,6 +69,7 @@ class InstanceDataManager:
             instance_data.tra_content = self._load_tra_content(instance_path, instance_name)
             instance_data.traj_content = self._load_traj_content(instance_path, instance_name)
             instance_data.patch_content = self._load_patch_content(instance_path, instance_name)
+            self._load_result_metrics(instance_path, instance_name, instance_data)
 
         return instance_data
 
@@ -224,6 +230,34 @@ class InstanceDataManager:
 
         self.logger.warning(f"未找到预测文件: {instance_path}/{instance_name}.[patch|pred]")
         return None
+
+    def _load_result_metrics(self, instance_path: Path, instance_name: str, instance_data: InstanceData) -> None:
+        result_file = instance_path / "result.json"
+        if not result_file.exists():
+            return
+        try:
+            with open(result_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return
+
+        perf = data.get("final_performance")
+        artifacts = data.get("final_artifacts")
+
+        instance_data.final_performance = perf
+        instance_data.final_artifacts = artifacts if isinstance(artifacts, str) else None
+
+        try:
+            import math
+            if isinstance(perf, (int, float)):
+                instance_data.passed = math.isfinite(float(perf))
+            elif isinstance(perf, str):
+                s = perf.strip().lower()
+                instance_data.passed = s not in ("inf", "+inf", "infinity", "+infinity")
+            else:
+                instance_data.passed = False
+        except Exception:
+            instance_data.passed = False
 
     def _read_file_safe(self, file_path: Path) -> str | None:
         """安全读取文件内容"""

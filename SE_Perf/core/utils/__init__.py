@@ -12,6 +12,7 @@ from .traj_pool_manager import TrajPoolManager
 from .traj_summarizer import TrajSummarizer
 from .traj_extractor import TrajExtractor
 from .llm_client import LLMClient, TrajectorySummarizer
+from .local_memory_manager import LocalMemoryManager
 from .problem_manager import ProblemManager, get_problem_manager, get_problem_description, validate_problem_availability
 from .instance_data_manager import (
     InstanceData,
@@ -36,6 +37,7 @@ __all__ = [
     # LLM集成
     "LLMClient",
     "TrajectorySummarizer",
+    "LocalMemoryManager",
     # 问题管理 (统一接口)
     "ProblemManager",
     "get_problem_manager",

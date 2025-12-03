@@ -20,6 +20,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent))
 
 # 导入SE日志系统
+from core.utils.local_memory_manager import LocalMemoryManager
 from core.utils.se_logger import get_se_logger, setup_se_logging
 from core.utils.traj_extractor import TrajExtractor
 from core.utils.traj_pool_manager import TrajPoolManager
@@ -95,6 +96,8 @@ def _execute_operator_step(
     try:
         if isinstance(step, dict) and step.get("selection_mode"):
             op_cfg["operator_selection_mode"] = step.get("selection_mode")
+        if isinstance(step, dict) and step.get("prompt_config"):
+            op_cfg["prompt_config"] = step.get("prompt_config")
     except Exception:
         pass
     operator = create_operator(operator_name, op_cfg)
@@ -140,6 +143,12 @@ def _summarize_iteration_to_pool(
     包含提取实例数据、格式化轨迹条目、并调用 traj_pool_manager 进行持久化。
     """
     try:
+        try:
+            pc = se_config.get("prompt_config") if isinstance(se_config, dict) else None
+            if isinstance(pc, dict):
+                traj_pool_manager.prompt_config = pc
+        except Exception:
+            pass
         extractor = TrajExtractor()
         # 包含性能指标
         extracted = extractor.extract_instance_data(iteration_dir, include_metrics=True)
@@ -169,10 +178,11 @@ def _summarize_iteration_to_pool(
                     "trajectory_content": tra_content,
                     "patch_content": patch_content,
                     "iteration": iteration_index,
-                    "performance": (perf_metrics or {}).get("final_performance"),
+                    "performance": (perf_metrics or {}).get("performance"),
                     "source_dir": str(iteration_dir / instance_name),
                     "source_entry_labels": list(per_inst_src or []),
                     "operator_name": str(operator_name) if operator_name is not None else None,
+                    "perf_metrics": perf_metrics,
                 }
             )
         traj_pool_manager.summarize_and_add_trajectories(
@@ -595,7 +605,7 @@ def main():
         # 设置全局 token 统计日志文件路径（按运行输出目录隔离）
         os.environ["SE_TOKEN_LOG_PATH"] = str(Path(output_dir) / "token_usage.jsonl")
 
-        # 初始化轨迹池管理器
+        # 初始化轨迹池管理器 + 本地记忆管理器
         traj_pool_path = os.path.join(output_dir, "traj.pool")
 
         # 创建LLM客户端用于轨迹总结
@@ -609,8 +619,31 @@ def main():
         except Exception as e:
             logger.warning(f"LLM客户端初始化失败，将使用备用总结: {e}")
 
-        # 将 se_config 中的并发控制传入 TrajPoolManager
-        traj_pool_manager = TrajPoolManager(traj_pool_path, llm_client, num_workers=se_config.get("num_workers"))
+        # 初始化 LocalMemoryManager（按 local_memory.enabled 控制）
+        local_memory = None
+        try:
+            memcfg = se_config.get("local_memory") if isinstance(se_config, dict) else None
+            enable_local_memory = True
+            if isinstance(memcfg, dict):
+                enable_local_memory = bool(memcfg.get("enabled", True))
+            if enable_local_memory:
+                memory_path = Path(output_dir) / "memory.json"
+                local_memory = LocalMemoryManager(memory_path, llm_client=llm_client)
+                local_memory.initialize()
+                logger.info("LocalMemoryManager 已启用")
+            else:
+                logger.info("LocalMemoryManager 已禁用")
+        except Exception as me:
+            logger.warning(f"LocalMemoryManager 初始化失败或被禁用: {me}")
+
+        # 将 se_config 中的并发控制传入 TrajPoolManager，并注入 memory 管理器
+        traj_pool_manager = TrajPoolManager(
+            traj_pool_path,
+            llm_client,
+            num_workers=se_config.get("num_workers"),
+            memory_manager=local_memory,
+            prompt_config=se_config.get("prompt_config"),
+        )
         traj_pool_manager.initialize_pool()
         logger.info(f"轨迹池初始化: {traj_pool_path}")
         print(f"🏊 轨迹池: {traj_pool_path}")
@@ -697,6 +730,21 @@ def main():
                                 tra_stats = processor.process_iteration_directory(iteration_dir)
 
                                 if tra_stats and tra_stats.get("total_tra_files", 0) > 0:
+                                    perf_cfg_path = iteration.get("perf_base_config")
+                                    opt_target, lang_val = _extract_opt_lang_from_perf_config(perf_cfg_path)
+                                    try:
+                                        pc = (
+                                            se_config.setdefault("prompt_config", {})
+                                            if isinstance(se_config, dict)
+                                            else {}
+                                        )
+                                        scfg = pc.setdefault("summarizer", {}) if isinstance(pc, dict) else {}
+                                        if opt_target:
+                                            scfg["optimization_target"] = opt_target
+                                        if lang_val:
+                                            scfg["language"] = lang_val
+                                    except Exception:
+                                        pass
                                     _summarize_iteration_to_pool(
                                         iteration_dir,
                                         next_iteration_index,
@@ -815,6 +863,17 @@ def main():
                         tra_stats = processor.process_iteration_directory(iteration_dir)
                         if tra_stats and tra_stats.get("total_tra_files", 0) > 0:
                             prefix = iteration.get("trajectory_label")
+                            perf_cfg_path = iteration.get("perf_base_config")
+                            opt_target, lang_val = _extract_opt_lang_from_perf_config(perf_cfg_path)
+                            try:
+                                pc = se_config.setdefault("prompt_config", {}) if isinstance(se_config, dict) else {}
+                                scfg = pc.setdefault("summarizer", {}) if isinstance(pc, dict) else {}
+                                if opt_target:
+                                    scfg["optimization_target"] = opt_target
+                                if lang_val:
+                                    scfg["language"] = lang_val
+                            except Exception:
+                                pass
                             # 将生成的轨迹汇总到全局轨迹池
                             _summarize_iteration_to_pool(
                                 iteration_dir,
@@ -948,3 +1007,27 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def _extract_opt_lang_from_perf_config(perf_cfg_path: str | None) -> tuple[str | None, str | None]:
+    try:
+        if not perf_cfg_path:
+            return None, None
+        with open(perf_cfg_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        opt = None
+        lang = None
+        try:
+            opt = (cfg.get("optimization") or {}).get("target")
+        except Exception:
+            opt = None
+        try:
+            lang = (cfg.get("language_cfg") or {}).get("language")
+        except Exception:
+            lang = None
+        return (
+            str(opt) if isinstance(opt, str) and opt.strip() else None,
+            str(lang) if isinstance(lang, str) and lang.strip() else None,
+        )
+    except Exception:
+        return None, None

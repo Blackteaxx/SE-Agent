@@ -6,12 +6,14 @@ Trajectory Pool Manager (Label-based)
 性能数据、代码路径等元信息。
 """
 
+import copy
 import json
+import math
 import os
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from core.utils.se_logger import get_se_logger
 
@@ -23,7 +25,14 @@ class TrajPoolManager:
     轨迹池是一个以字符串标签为键的字典。
     """
 
-    def __init__(self, pool_path: str, llm_client=None, num_workers: int | None = None):
+    def __init__(
+        self,
+        pool_path: str,
+        llm_client=None,
+        num_workers: int | None = None,
+        memory_manager: Optional["LocalMemoryManager"] = None,  # noqa: F821
+        prompt_config: dict[str, Any] | None = None,
+    ):
         """
         初始化轨迹池管理器。
 
@@ -37,6 +46,9 @@ class TrajPoolManager:
         # 并发控制（来自SE配置）；为空则使用默认策略
         self.num_workers = num_workers
         self.logger = get_se_logger("traj_pool", emoji="🏊")
+        self.memory_manager = memory_manager
+        self.prompt_config = prompt_config or {}
+        self._best_labels: dict[str, str] = {}
 
     def initialize_pool(self) -> None:
         """初始化轨迹池文件。如果文件不存在，则创建一个空的 JSON 对象。"""
@@ -54,6 +66,10 @@ class TrajPoolManager:
         except Exception as e:
             self.logger.error(f"初始化轨迹池失败: {e}")
             raise
+        try:
+            self.refresh_best_labels()
+        except Exception:
+            pass
 
     def load_pool(self) -> dict[str, Any]:
         """从文件加载整个轨迹池。"""
@@ -152,8 +168,6 @@ class TrajPoolManager:
                         else:
                             labels.add(subkey)
 
-        
-
         if instance_name:
             entry = pool_data.get(instance_name)
             if entry:
@@ -197,6 +211,12 @@ class TrajPoolManager:
 
         self.save_pool(pool_data)
         self.logger.info(f"已更新实例 '{instance_name}' 的条目: {iter_label}")
+        try:
+            best = self._select_best_label(merged)
+            if best:
+                self._best_labels[inst_key] = best
+        except Exception:
+            pass
 
     def add_trajectory(self, label: str, traj_info: dict[str, Any], instance_name: str | None = None) -> None:
         """
@@ -234,31 +254,35 @@ class TrajPoolManager:
         }
         self.add_or_update_instance(inst_name, entry)
 
-    def relabel(self, old_label: str, new_label: str, instance_name: str | None = None) -> None:
+    def relabel(
+        self,
+        old_label: str,
+        new_label: str,
+        instance_name: str | None = None,
+        operator_name: str | None = None,
+        delete_old: bool = False,
+    ) -> None:
         pool_data = self.load_pool()
         if instance_name:
             if instance_name not in pool_data:
                 raise ValueError(f"实例 '{instance_name}' 不存在，无法重命名标签。")
-            # 查找该实例的所有子键，更新匹配的旧标签子键为新标签
             inst_entry = pool_data[instance_name]
             if old_label in inst_entry:
                 old_entry = inst_entry.get(old_label)
-                if str(new_label) not in inst_entry:
-                    new_entry = old_entry.copy() if isinstance(old_entry, dict) else old_entry
-                    if isinstance(new_entry, dict):
-                        new_entry["label"] = new_label
-                        src = new_entry.get("source_entry_labels")
-                        if isinstance(src, list):
-                            if old_label not in src:
-                                src.append(old_label)
-                            new_entry["source_entry_labels"] = src
-                        else:
-                            new_entry["source_entry_labels"] = [old_label]
-                    inst_entry[str(new_label)] = new_entry
-                inst_entry["label"] = new_label
-            else:
-                # 若未找到子键，回退到设置顶层当前标签
-                inst_entry["label"] = new_label
+                new_entry = copy.deepcopy(old_entry) if isinstance(old_entry, dict) else old_entry
+                if isinstance(new_entry, dict):
+                    # 更新 relabel 后 entry 相关的信息
+                    new_entry["label"] = new_label
+                    if operator_name is not None:
+                        new_entry["operator_name"] = operator_name
+                    new_entry["source_entry_labels"] = [old_label]
+                inst_entry[str(new_label)] = new_entry
+                if delete_old:
+                    try:
+                        del inst_entry[old_label]
+                    except Exception:
+                        pass
+            inst_entry["label"] = new_label
         else:
             target_inst = None
             for inst_name, entry in pool_data.items():
@@ -267,25 +291,24 @@ class TrajPoolManager:
                     break
             if target_inst is None:
                 raise ValueError(f"标签 '{old_label}' 不存在，无法重命名。")
-            # 更新顶层当前标签映射，同时若存在子键也更新子键名
             inst_entry = pool_data[target_inst]
             if old_label in inst_entry:
                 old_entry = inst_entry.get(old_label)
-                if str(new_label) not in inst_entry:
-                    new_entry = old_entry.copy() if isinstance(old_entry, dict) else old_entry
-                    if isinstance(new_entry, dict):
-                        new_entry["label"] = new_label
-                        src = new_entry.get("source_entry_labels")
-                        if isinstance(src, list):
-                            if old_label not in src:
-                                src.append(old_label)
-                            new_entry["source_entry_labels"] = src
-                        else:
-                            new_entry["source_entry_labels"] = [old_label]
-                    inst_entry[str(new_label)] = new_entry
+                new_entry = copy.deepcopy(old_entry) if isinstance(old_entry, dict) else old_entry
+                if isinstance(new_entry, dict):
+                    new_entry["label"] = new_label
+                    if operator_name is not None:
+                        new_entry["operator_name"] = operator_name
+                    new_entry["source_entry_labels"] = [old_label]
+                inst_entry[str(new_label)] = new_entry
+                if delete_old:
+                    try:
+                        del inst_entry[old_label]
+                    except Exception:
+                        pass
             inst_entry["label"] = new_label
         self.save_pool(pool_data)
-        self.logger.info(f"已重命名标签 '{old_label}' 为 '{new_label}'。")
+        self.logger.info(f"重命名并更新算子 '{old_label}' -> '{new_label}'，operator={operator_name or 'unchanged'}。")
 
     def delete_trajectories(self, labels: list[str], instance_name: str | None = None) -> None:
         pool_data = self.load_pool()
@@ -323,6 +346,8 @@ class TrajPoolManager:
         iteration: int,
         label: str,
         problem_description: str | None = None,
+        best_solution_text: str | None = None,
+        target_solution_text: str | None = None,
     ) -> dict[str, Any]:
         """
         使用 LLM (或备用方法) 总结单条轨迹的内容。
@@ -347,9 +372,14 @@ class TrajPoolManager:
 
         try:
             if self.llm_client:
-                traj_summarizer = TrajectorySummarizer(self.llm_client)
+                traj_summarizer = TrajectorySummarizer(self.llm_client, prompt_config=self.prompt_config)
                 summary = traj_summarizer.summarize_trajectory(
-                    trajectory_content, patch_content, iteration, problem_description=problem_description
+                    trajectory_content,
+                    patch_content,
+                    iteration,
+                    problem_description=problem_description,
+                    best_solution_text=best_solution_text,
+                    target_solution_text=target_solution_text,
                 )
                 # 为失败实例添加特殊标记
                 if is_failed:
@@ -382,11 +412,17 @@ class TrajPoolManager:
                 - "label": str
                 - "instance_name": str
                 - "problem_description": str
-                - "trajectory_content": str
-                - "patch_content": str
+                - "trajectory_content": str  (.tra 内容)
+                - "patch_content": str       (.pred/.patch 文本)
                 - "iteration": int
-                - "performance": float | None
+                - "perf_metrics": dict | None  包含:
+                    - "passed": bool | None
+                    - "performance": float | str | None
+                    - "artifacts": str | None   (已格式化文本)
+                - "performance": float | str | None  (兼容旧字段，若与 perf_metrics 同时存在，优先 perf_metrics.performance)
                 - "source_dir": str
+                - "operator_name": str | None
+                - "source_entry_labels": list[str] | None
             num_workers: 并发数。
 
         Returns:
@@ -398,12 +434,47 @@ class TrajPoolManager:
         def _summarize_item(item: dict[str, Any]) -> dict[str, Any] | None:
             """线程工作函数：总结轨迹并构建完整的 TrajectoryInfo 对象。"""
             try:
+                best_solution_text = ""
+                try:
+                    inst = str(item.get("instance_name") or "")
+                    if inst:
+                        best_label = self.get_best_label(inst)
+                        if best_label:
+                            pool_data = self.load_pool()
+                            entry = pool_data.get(inst)
+                            if isinstance(entry, dict):
+                                cand = entry.get(str(best_label))
+                                if isinstance(cand, dict):
+                                    best_solution_text = self.format_entry({str(best_label): cand})
+                except Exception:
+                    best_solution_text = ""
+
+                target_solution_text = ""
+                try:
+                    lab = str(item.get("label") or "target")
+                    target_solution_text = self.format_entry(
+                        {
+                            lab: {
+                                "label": lab,
+                                "iteration": item.get("iteration"),
+                                "code": item.get("patch_content") or "",
+                                "perf_metrics": item.get("perf_metrics"),
+                                "performance": item.get("performance"),
+                                "operator_name": item.get("operator_name"),
+                            }
+                        }
+                    )
+                except Exception:
+                    target_solution_text = str(item.get("patch_content") or "")
+
                 summary = self.summarize_trajectory(
                     trajectory_content=item["trajectory_content"],
                     patch_content=item["patch_content"],
                     iteration=item["iteration"],
                     label=item["label"],
                     problem_description=item.get("problem_description"),
+                    best_solution_text=best_solution_text,
+                    target_solution_text=target_solution_text,
                 )
 
                 # 在总结对象中附加来源标签，便于后续分析
@@ -435,6 +506,7 @@ class TrajPoolManager:
                     "trajectory_raw": trajectory_raw_obj,
                     "source_entry_labels": item.get("source_entry_labels"),
                     "operator_name": item.get("operator_name"),
+                    "perf_metrics": item.get("perf_metrics"),
                 }
             except Exception as e:
                 self.logger.error(f"并行轨迹总结任务失败 (标签 '{item.get('label')}'): {e}")
@@ -488,6 +560,48 @@ class TrajPoolManager:
                         merged[str(iter_label)] = detail
                         pool_data[inst_key] = merged
                         written_count += 1
+                        try:
+                            best = self._select_best_label(merged)
+                            if best:
+                                self._best_labels[inst_key] = best
+                        except Exception:
+                            pass
+
+                        # 记忆提炼与更新（在写入前后均可，这里选择在写入前准备好上下文）
+                        try:
+                            if self.memory_manager:
+                                # 查找上一条迭代的代码作为对比
+                                prev_code: str | None = None
+                                try:
+                                    # 从 existing 中找出迭代号较小且最大的条目
+                                    prev_entries = []
+                                    for k, v in existing.items():
+                                        if k == "problem":
+                                            continue
+                                        if isinstance(v, dict):
+                                            it = v.get("iteration")
+                                            if isinstance(it, int) and it < int(res.get("iteration") or 0):
+                                                prev_entries.append((it, v))
+                                    if prev_entries:
+                                        prev_entries.sort(key=lambda t: t[0], reverse=True)
+                                        prev_code = prev_entries[0][1].get("code")
+                                except Exception:
+                                    prev_code = None
+
+                                self.memory_manager.extract_and_update(
+                                    instance_name=inst_name,
+                                    iteration=int(res.get("iteration") or 0),
+                                    summary=res.get("summary") or {},
+                                    patch_content=str(res.get("code") or ""),
+                                    perf_metrics=res.get("perf_metrics"),
+                                    previous_code=prev_code,
+                                    current_label=str(res.get("label") or ""),
+                                    operator_name=str(res.get("operator_name") or ""),
+                                )
+                        except Exception as me:
+                            self.logger.warning(
+                                f"本地记忆提炼失败（实例 '{inst_name}' 标签 '{res.get('label')}'): {me}"
+                            )
                     except Exception as we:
                         self.logger.error(f"准备写入轨迹池失败: 实例 '{inst_name}' 标签 '{res.get('label')}': {we}")
 
@@ -500,6 +614,181 @@ class TrajPoolManager:
         except Exception as e:
             self.logger.error(f"并行生成与批量写入轨迹总结失败: {e}")
             raise
+
+    def _select_best_label(self, inst_entry: dict[str, Any]) -> str | None:
+        candidates: list[tuple[str, float, int]] = []  # (label, perf, iteration)
+        for k, v in inst_entry.items():
+            if k == "problem" or not isinstance(v, dict):
+                continue
+            perf_val = None
+            pm = v.get("perf_metrics")
+            if isinstance(pm, dict) and pm.get("performance") is not None:
+                perf_val = pm.get("performance")
+            if perf_val is None:
+                perf_val = v.get("performance")
+
+            # parse performance to float
+            try:
+                if isinstance(perf_val, (int, float)):
+                    val = float(perf_val)
+                elif isinstance(perf_val, str):
+                    s = perf_val.strip().lower()
+                    if s in ("inf", "+inf", "infinity", "+infinity"):
+                        val = float("inf")
+                    elif s in ("-inf", "-infinity"):
+                        val = float("inf")  # treat as non-finite for selection purposes
+                    elif s == "nan":
+                        val = float("inf")
+                    else:
+                        val = float(s)
+                else:
+                    val = float("inf")
+            except Exception:
+                val = float("inf")
+
+            label_txt = str(v.get("label") or k)
+            it_raw = v.get("iteration")
+            try:
+                iter_num = int(it_raw) if it_raw is not None else -1
+            except Exception:
+                iter_num = -1
+            candidates.append((label_txt, val, iter_num))
+
+        if not candidates:
+            return None
+
+        finite = [c for c in candidates if math.isfinite(c[1])]
+        if finite:
+            # choose min performance; tie-breaker: latest iteration
+            finite.sort(key=lambda t: (t[1], -t[2]))
+            return finite[0][0]
+        # no finite performance: choose latest iteration
+        candidates.sort(key=lambda t: (-t[2], t[0]))
+        return candidates[0][0]
+
+    def get_best_label(self, instance_name: str) -> str | None:
+        inst_key = str(instance_name)
+        lbl = self._best_labels.get(inst_key)
+        if isinstance(lbl, str) and lbl:
+            return lbl
+        pool_data = self.load_pool()
+        entry = pool_data.get(inst_key)
+        if not isinstance(entry, dict):
+            return None
+        try:
+            best = self._select_best_label(entry)
+            if best:
+                self._best_labels[inst_key] = best
+            return best
+        except Exception:
+            return None
+
+    def refresh_best_labels(self) -> None:
+        self._best_labels = {}
+        pool_data = self.load_pool()
+        for inst_name, entry in pool_data.items():
+            if isinstance(entry, dict):
+                try:
+                    best = self._select_best_label(entry)
+                    if best:
+                        self._best_labels[str(inst_name)] = best
+                except Exception:
+                    continue
+
+    @staticmethod
+    def format_entry(approaches_data: dict[str, Any]) -> str:
+        if not isinstance(approaches_data, dict) or not approaches_data:
+            return ""
+
+        def _parse_key_num(k: Any) -> int | None:
+            if isinstance(k, str):
+                if k.isdigit():
+                    try:
+                        return int(k)
+                    except Exception:
+                        return None
+                import re
+
+                m = re.search(r"(\d+)$", k)
+                if m:
+                    try:
+                        return int(m.group(1))
+                    except Exception:
+                        return None
+            return None
+
+        candidates: list[int] = []
+        mapping: dict[int, tuple[str, Any]] = {}
+        for key, val in approaches_data.items():
+            if key == "problem":
+                continue
+            key_num = _parse_key_num(key)
+            iter_num = None
+            if isinstance(val, dict):
+                it = val.get("iteration")
+                try:
+                    if it is not None:
+                        iter_num = int(it)
+                except Exception:
+                    iter_num = None
+            use_num = iter_num if isinstance(iter_num, int) else key_num if isinstance(key_num, int) else -1
+            candidates.append(use_num)
+            mapping[use_num] = (str(key), val)
+
+        if not candidates:
+            return ""
+        latest_iteration = max(candidates)
+        latest_key, latest_data = mapping.get(latest_iteration, ("", {}))
+
+        def indent_str(level: int) -> str:
+            return "  " * level
+
+        def fmt_value(val: Any, level: int) -> str:
+            if val is None:
+                return "null"
+            if isinstance(val, (int, float)):
+                return str(val)
+            if isinstance(val, bool):
+                return "true" if val else "false"
+            if isinstance(val, str):
+                if "\n" in val:
+                    lines = val.splitlines()
+                    pad = indent_str(level + 1)
+                    return "|\n" + "\n".join(f"{pad}{line}" for line in lines)
+                return val
+            if isinstance(val, dict):
+                lines: list[str] = []
+                for k, v in val.items():
+                    if str(k) in {"trajectory_raw", "source_dir"}:
+                        continue
+                    key_line = f"{indent_str(level)}{k}:"
+                    code_key = str(k) in {
+                        "code",
+                    }
+                    if code_key and isinstance(v, str):
+                        lines.append(key_line)
+                        lines.append(f"```\n{v}\n```")
+                    elif isinstance(v, (dict, list)) or (isinstance(v, str) and "\n" in v):
+                        lines.append(key_line)
+                        lines.append(fmt_value(v, level + 1))
+                    else:
+                        lines.append(f"{key_line} {fmt_value(v, 0)}")
+                return "\n".join(lines)
+            if isinstance(val, list):
+                lines: list[str] = []
+                for item in val:
+                    if isinstance(item, (dict, list)) or (isinstance(item, str) and "\n" in item):
+                        lines.append(f"{indent_str(level)}-")
+                        lines.append(fmt_value(item, level + 1))
+                    else:
+                        lines.append(f"{indent_str(level)}- {fmt_value(item, 0)}")
+                return "\n".join(lines)
+            return str(val)
+
+        chosen_label = latest_data.get("label") if isinstance(latest_data, dict) else None
+        header = str(chosen_label or latest_key).strip()
+        body = fmt_value(latest_data, 0)
+        return f"{header}\n{body}".strip() if header else body
 
     def get_pool_stats(self) -> dict[str, Any]:
         """获取轨迹池的统计信息。"""

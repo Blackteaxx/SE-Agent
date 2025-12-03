@@ -201,7 +201,7 @@ class LLMClient:
 class TrajectorySummarizer:
     """专门用于轨迹总结的LLM客户端包装器"""
 
-    def __init__(self, llm_client: LLMClient):
+    def __init__(self, llm_client: LLMClient, prompt_config: dict[str, Any] | None = None):
         """
         初始化轨迹总结器
 
@@ -210,9 +210,16 @@ class TrajectorySummarizer:
         """
         self.llm_client = llm_client
         self.logger = get_se_logger("traj_summarizer", emoji="📊")
+        self.prompt_config = prompt_config or {}
 
     def summarize_trajectory(
-        self, trajectory_content: str, patch_content: str, iteration: int, problem_description: str | None = None
+        self,
+        trajectory_content: str,
+        patch_content: str,
+        iteration: int,
+        problem_description: str | None = None,
+        best_solution_text: str | None = None,
+        target_solution_text: str | None = None,
     ) -> dict[str, Any]:
         """
         使用LLM总结轨迹内容
@@ -228,11 +235,17 @@ class TrajectorySummarizer:
         """
         from .traj_summarizer import TrajSummarizer
 
-        summarizer = TrajSummarizer()
+        summarizer = TrajSummarizer(self.prompt_config)
 
         # 获取提示词
         system_prompt = summarizer.get_system_prompt()
-        user_prompt = summarizer.format_user_prompt(trajectory_content, patch_content, problem_description)
+        user_prompt = summarizer.format_user_prompt(
+            trajectory_content,
+            patch_content,
+            problem_description,
+            best_solution=best_solution_text,
+            target_solution=target_solution_text,
+        )
 
         self.logger.info(f"开始LLM轨迹总结 (迭代{iteration})")
         self.logger.debug(f"LLM系统提示词 (迭代{iteration}):\n{system_prompt}")

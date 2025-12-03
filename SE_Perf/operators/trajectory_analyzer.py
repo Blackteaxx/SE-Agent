@@ -7,10 +7,11 @@ Trajectory Analyzer Operator
 """
 
 import textwrap
-import yaml
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 from operators.base import TemplateOperator
 
@@ -20,29 +21,37 @@ class TrajectoryAnalyzerOperator(TemplateOperator):
         return "trajectory_analyzer"
 
     def get_strategy_prefix(self) -> str:
-        return "SOLUTION STRATEGY"
+        pcfg = self.config.get("prompt_config", {}) if isinstance(self.config, dict) else {}
+        opcfg = pcfg.get("trajectory_analyzer", {}) if isinstance(pcfg, dict) else {}
+        return str(opcfg.get("prefix") or pcfg.get("trajectory_analyzer_prefix") or "SOLUTION STRATEGY")
 
     def _build_additional_requirements(self, problem_statement: str, trajectory_snapshot: str) -> str:
-        header = "SOLUTION STRATEGY"
+        pcfg = self.config.get("prompt_config", {}) if isinstance(self.config, dict) else {}
+        opcfg = pcfg.get("trajectory_analyzer", {}) if isinstance(pcfg, dict) else {}
+        header = str(opcfg.get("header") or pcfg.get("trajectory_analyzer_header") or "SOLUTION STRATEGY")
         prob = textwrap.indent(str(problem_statement).strip(), "  ")
         snap = textwrap.indent(str(trajectory_snapshot).strip(), "  ")
         body = (
-            "Guidance:\n"
-            "1. Begin from an alternative entry point: runtime tracing, I/O profiling, or component isolation.\n"
-            "2. Use a non-linear reasoning sequence with hypothesis→micro-test loops.\n"
-            "3. Integrate unconventional techniques: targeted benchmarks, memory profiling, fuzzing.\n"
-            "4. Prioritize overlooked aspects: performance metrics, boundary conditions, integration constraints.\n"
-            "5. Keep changes minimal and testable; modify one module at a time with assertions.\n"
-            "6. Explicitly validate assumptions to avoid repeating prior patterns.\n"
+            opcfg.get("guidance")
+            or pcfg.get("trajectory_analyzer_guidance")
+            or (
+                "Guidance:\n"
+                "1. Begin from an alternative entry point: runtime tracing, I/O profiling, or component isolation.\n"
+                "2. Use a non-linear reasoning sequence with hypothesis→micro-test loops.\n"
+                "3. Integrate unconventional techniques: targeted benchmarks, memory profiling, fuzzing.\n"
+                "4. Prioritize overlooked aspects: performance metrics, boundary conditions, integration constraints.\n"
+                "5. Keep changes minimal and testable; modify one module at a time with assertions.\n"
+                "6. Explicitly validate assumptions to avoid repeating prior patterns.\n"
+            )
         )
         return f"{header}\n\nPROBLEM:\n{prob}\n\nTRAJECTORY SNAPSHOT:\n{snap}\n\n{body}".strip()
 
     def run(
         self,
-        step_config: Dict[str, Any],
+        step_config: dict[str, Any],
         traj_pool_manager,
         workspace_dir: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         all_instances = traj_pool_manager.get_all_trajectories()
         output_dir = Path(workspace_dir) / "system_prompt"
         output_dir.mkdir(parents=True, exist_ok=True)

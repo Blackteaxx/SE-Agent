@@ -112,24 +112,35 @@ class CrossoverOperator(BaseOperator):
     def _build_additional_requirements(self, trajectory1: str, trajectory2: str) -> str:
         t1 = textwrap.indent(trajectory1.strip(), "  ")
         t2 = textwrap.indent(trajectory2.strip(), "  ")
-        req = f"""
-### STRATEGY MODE: CROSSOVER STRATEGY
-You are tasked with synthesizing a SUPERIOR hybrid solution by intelligently combining the best elements of two prior optimization trajectories described below.
-
-### TRAJECTORY 1 SUMMARY
-{t1}
-
-### TRAJECTORY 2 SUMMARY
-{t2}
-
+        pcfg = self.config.get("prompt_config", {}) if isinstance(self.config, dict) else {}
+        opcfg = pcfg.get("crossover", {}) if isinstance(pcfg, dict) else {}
+        header = (
+            opcfg.get("header")
+            or pcfg.get("crossover_header")
+            or "### STRATEGY MODE: CROSSOVER STRATEGY\nYou are tasked with synthesizing a SUPERIOR hybrid solution by intelligently combining the best elements of two prior optimization trajectories described below."
+        )
+        guidelines = (
+            opcfg.get("guidelines")
+            or pcfg.get("crossover_guidelines")
+            or (
+                """
 ### SYNTHESIS GUIDELINES
 1. **Complementary Combination**: Actively combine specific strengths.
 - Example: If T1 has a better Core Algorithm but slow I/O, and T2 has fast I/O but a naive algorithm, implement T1's algorithm using T2's I/O technique.
 - Example: If T1 used a correct Stack logic but slow List, and T2 used a fast Array but had logic bugs, implement T1's logic using T2's structure.
 2. **Avoid Shared Weaknesses**: If both trajectories failed at a specific sub-task, you must introduce a novel fix for that specific part.
 3. **Seamless Integration**: Do not just concatenate code. The resulting logic must be a single, cohesive implementation.
-        """
-        return req
+            """
+            )
+        )
+        parts = []
+        if isinstance(header, str) and header.strip():
+            parts.append(header.strip())
+        parts.append("\n### TRAJECTORY 1 SUMMARY\n" + t1)
+        parts.append("\n### TRAJECTORY 2 SUMMARY\n" + t2)
+        if isinstance(guidelines, str) and guidelines.strip():
+            parts.append("\n" + guidelines.strip())
+        return "\n".join(parts)
 
 
 # 注册算子

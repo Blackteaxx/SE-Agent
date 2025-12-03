@@ -10,7 +10,8 @@ Trajectory Pool Summary Operator
 import json
 import textwrap
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
+
 import yaml
 
 from operators.base import TemplateOperator
@@ -23,7 +24,9 @@ class TrajPoolSummaryOperator(TemplateOperator):
         return "traj_pool_summary"
 
     def get_strategy_prefix(self) -> str:
-        return "RISK-AWARE PROBLEM SOLVING GUIDANCE"
+        pcfg = self.config.get("prompt_config", {}) if isinstance(self.config, dict) else {}
+        opcfg = pcfg.get("traj_pool_summary", {}) if isinstance(pcfg, dict) else {}
+        return str(opcfg.get("prefix") or pcfg.get("traj_pool_summary_prefix") or "RISK-AWARE PROBLEM SOLVING GUIDANCE")
 
     def _discover_instances(self, workspace_dir: Path, current_iteration: int) -> list[dict[str, Any]]:
         """
@@ -150,15 +153,23 @@ class TrajPoolSummaryOperator(TemplateOperator):
 
     def _build_additional_requirements(self, problem_statement: str, approaches_data: dict[str, Any]) -> str:
         formatted_attempts = self._format_approaches_data(approaches_data)
-        header = "RISK-AWARE PROBLEM SOLVING GUIDANCE"
+        pcfg = self.config.get("prompt_config", {}) if isinstance(self.config, dict) else {}
+        opcfg = pcfg.get("traj_pool_summary", {}) if isinstance(pcfg, dict) else {}
+        header = str(
+            opcfg.get("header") or pcfg.get("traj_pool_summary_header") or "RISK-AWARE PROBLEM SOLVING GUIDANCE"
+        )
         prob = textwrap.indent(str(problem_statement).strip(), "  ")
         attempts = textwrap.indent(formatted_attempts.strip(), "  ")
         body = (
-            "Guidance:\n"
-            "1. Identify and avoid previously failed techniques and blind spots.\n"
-            "2. Prefer robust alternatives with clearer performance characteristics.\n"
-            "3. Integrate proven components across attempts when helpful.\n"
-            "4. Keep code simple, correct, and maintainable.\n"
+            opcfg.get("guidance")
+            or pcfg.get("traj_pool_summary_guidance")
+            or (
+                "Guidance:\n"
+                "1. Identify and avoid previously failed techniques and blind spots.\n"
+                "2. Prefer robust alternatives with clearer performance characteristics.\n"
+                "3. Integrate proven components across attempts when helpful.\n"
+                "4. Keep code simple, correct, and maintainable.\n"
+            )
         )
         return f"{header}\n\nPROBLEM:\n{prob}\n\nHISTORY COMPONENTS:\n{attempts}\n\n{body}".strip()
 
@@ -198,10 +209,10 @@ class TrajPoolSummaryOperator(TemplateOperator):
 
     def run(
         self,
-        step_config: Dict[str, Any],
+        step_config: dict[str, Any],
         traj_pool_manager,
         workspace_dir: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         all_instances = traj_pool_manager.get_all_trajectories()
         output_dir = Path(workspace_dir) / "system_prompt"
         output_dir.mkdir(parents=True, exist_ok=True)

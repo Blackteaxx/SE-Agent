@@ -121,20 +121,33 @@ class ReflectionRefineOperator(BaseOperator):
         构造带有反思与改进要求的 additional_requirements 文本。
         """
         src = textwrap.indent((source_summary or "").strip(), "  ")
-        req = f"""
-### STRATEGY MODE: REFLECTION AND REFINE STRATEGY
-You must explicitly reflect on the previous trajectory and implement concrete improvements.
-
-### SOURCE TRAJECTORY SUMMARY
-{src}
-
+        pcfg = self.config.get("prompt_config", {}) if isinstance(self.config, dict) else {}
+        opcfg = pcfg.get("reflection_refine", {}) if isinstance(pcfg, dict) else {}
+        header = (
+            opcfg.get("header")
+            or pcfg.get("reflection_header")
+            or "### STRATEGY MODE: REFLECTION AND REFINE STRATEGY\nYou must explicitly reflect on the previous trajectory and implement concrete improvements."
+        )
+        guidelines = (
+            opcfg.get("guidelines")
+            or pcfg.get("reflection_guidelines")
+            or (
+                """
 ### REFINEMENT GUIDELINES
 1. **Diagnose**: Identify the main shortcomings (correctness risks, bottlenecks, redundant work, I/O overhead).
 2. **Fixes**: Propose targeted code-level changes (algorithmic upgrade, data structure replacement, caching/precomputation, I/O batching).
 3. **Maintain Correctness**: Prioritize correctness; add guards/tests if necessary before optimizing runtime.
 4. **Performance Goal**: Aim for measurable runtime improvement. Prefer asymptotic gains over micro-optimizations.
-"""
-        return req
+            """
+            )
+        )
+        parts = []
+        if isinstance(header, str) and header.strip():
+            parts.append(header.strip())
+        parts.append("\n### SOURCE TRAJECTORY SUMMARY\n" + src)
+        if isinstance(guidelines, str) and guidelines.strip():
+            parts.append("\n" + guidelines.strip())
+        return "\n".join(parts)
 
 
 # 注册算子

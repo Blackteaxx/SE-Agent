@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 Filter Trajectories Operator
 
@@ -7,10 +6,9 @@ Filter Trajectories Operator
 """
 
 import math
-import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 from core.utils.traj_pool_manager import TrajPoolManager
 
@@ -28,8 +26,8 @@ class FilterTrajectoriesOperator(BaseOperator):
         return "filter_trajectories"
 
     def _calculate_kept_and_deleted_labels(
-        self, inst_labels: List[str], entry: Dict[str, Any], top_k: int | None = None
-    ) -> tuple[List[str], List[str]]:
+        self, inst_labels: list[str], entry: dict[str, Any], top_k: int | None = None
+    ) -> tuple[list[str], list[str]]:
         n = len(inst_labels)
         self.logger.info(f"开始过滤轨迹，共 {n} 个标签，top_k={top_k}")
 
@@ -38,7 +36,7 @@ class FilterTrajectoriesOperator(BaseOperator):
             return inst_labels, []
         k = max(0, int(top_k))
 
-        candidates: List[Dict[str, Any]] = []
+        candidates: list[dict[str, Any]] = []
         for l in inst_labels:
             sub = entry.get(l) if isinstance(entry, dict) else None
             code_text = sub.get("code", "")
@@ -93,7 +91,7 @@ class FilterTrajectoriesOperator(BaseOperator):
                 clustering = AgglomerativeClustering(n_clusters=num_clusters, affinity="precomputed", linkage="average")
                 labels_arr = clustering.fit_predict(dist)
 
-            selected_indices: List[int] = []
+            selected_indices: list[int] = []
             unique_cluster_ids = set(labels_arr)
             self.logger.info(f"聚类完成，实际聚类数量: {len(unique_cluster_ids)}")
 
@@ -122,26 +120,26 @@ class FilterTrajectoriesOperator(BaseOperator):
 
     def run(
         self,
-        step_config: Dict[str, Any],
+        step_config: dict[str, Any],
         traj_pool_manager: TrajPoolManager,
         workspace_dir: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         input_labels = [item.get("label") for item in step_config.get("inputs", []) if item.get("label")]
         if not input_labels:
             input_labels = traj_pool_manager.get_all_labels()
 
         filter_strategy = step_config.get("strategy", {})
         top_k = filter_strategy.get("top_k")
-        relabel_as: List[str] = []
+        relabel_as: list[str] = []
         if isinstance(filter_strategy.get("relabel_as"), list):
             relabel_as = [str(x) for x in filter_strategy.get("relabel_as")]
-        relabel_map: Dict[str, str] = (
+        relabel_map: dict[str, str] = (
             filter_strategy.get("relabel", {}) if isinstance(filter_strategy.get("relabel"), dict) else {}
         )
 
         all_instances = traj_pool_manager.get_all_trajectories() or {}
-        per_instance: Dict[str, Dict[str, List[str]]] = {}
-        deleted_records_by_instance: Dict[str, List[Dict[str, Any]]] = {}
+        per_instance: dict[str, dict[str, list[str]]] = {}
+        deleted_records_by_instance: dict[str, list[dict[str, Any]]] = {}
 
         def _process_instance(args):
             instance_name, entry = args
@@ -149,7 +147,7 @@ class FilterTrajectoriesOperator(BaseOperator):
                 return None
 
             # 提取实例的标签
-            inst_labels: List[str] = []
+            inst_labels: list[str] = []
             for k, v in entry.items():
                 if k == "problem":
                     continue
@@ -174,8 +172,8 @@ class FilterTrajectoriesOperator(BaseOperator):
             kept, deleted = self._calculate_kept_and_deleted_labels(inst_labels, entry, top_k)
 
             # 应用重标签规则
-            final_kept: List[str] = []
-            relabel_ops: List[tuple[str, str]] = []
+            final_kept: list[str] = []
+            relabel_ops: list[tuple[str, str]] = []
             if relabel_as:
                 limit = min(len(relabel_as), len(kept))
                 for idx in range(limit):
@@ -194,7 +192,7 @@ class FilterTrajectoriesOperator(BaseOperator):
                     final_kept.append(new)
 
             # 收集删除记录
-            recs: List[Dict[str, Any]] = []
+            recs: list[dict[str, Any]] = []
             if deleted:
                 for lb in deleted:
                     subentry = entry.get(lb) if isinstance(entry, dict) else None
@@ -220,7 +218,7 @@ class FilterTrajectoriesOperator(BaseOperator):
         except Exception:
             max_workers = 1
 
-        results: List[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
             futures = [ex.submit(_process_instance, (name, entry)) for name, entry in (all_instances or {}).items()]
             for fut in as_completed(futures):
@@ -245,7 +243,13 @@ class FilterTrajectoriesOperator(BaseOperator):
             relabel_ops = res.get("relabels") or []
             for old, new in relabel_ops:
                 try:
-                    traj_pool_manager.relabel(old, new, instance_name=inst)
+                    traj_pool_manager.relabel(
+                        old,
+                        new,
+                        instance_name=inst,
+                        operator_name=self.get_name(),
+                        delete_old=False,
+                    )
                 except Exception:
                     pass
             deleted = res.get("deleted") or []

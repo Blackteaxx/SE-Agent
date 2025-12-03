@@ -116,7 +116,9 @@ class PlanOperator(TemplateOperator):
             """
             构建提示词，强调算法多样性、复杂度分析和严格的 JSON 格式。
             """
-            sys_prompt = """You are a world-class Algorithm Engineer and Competitive Programmer. Your task is to design EXACTLY K distinct, high-performance algorithmic strategies for a given problem.
+            pcfg = self.config.get("prompt_config", {}) if isinstance(self.config, dict) else {}
+            plan_cfg = pcfg.get("plan", {}) if isinstance(pcfg, dict) else {}
+            sys_prompt = plan_cfg.get("system_prompt") or """You are a world-class Algorithm Engineer and Competitive Programmer. Your task is to design EXACTLY K distinct, high-performance algorithmic strategies for a given problem.
 
 Guidelines:
 1. **Diversity**: The strategies MUST differ in algorithmic paradigms (e.g., Dynamic Programming, Greedy, BFS/DFS, Two Pointers, Sliding Window, Bit Manipulation) or Data Structures.
@@ -134,14 +136,17 @@ Guidelines:
 - NO conversational text outside the code block."""
 
             # 在 User Prompt 中再次强调 K，防止模型忽略
-            user_prompt = f"""
+            up_template = plan_cfg.get("user_prompt_template") or (
+                """
 Instruction: Generate {k} diverse high-performance strategies.
 
 Problem Description:
 {problem_text}
 
 Required Count: {k}
-        """
+                """
+            )
+            user_prompt = up_template.format(k=k, problem_text=problem_text)
 
             return sys_prompt, user_prompt
 
@@ -195,29 +200,39 @@ Required Count: {k}
             return last_vals
 
         def _fallback(idx: int) -> str:
+            plan_cfg = (self.config.get("prompt_config", {}) or {}).get("plan", {})
+            patterns = plan_cfg.get(
+                "fallback_patterns",
+                [
+                    "Prefer DP/graph over greedy; restructure loops with memoization.",
+                    "Use alternative data structures (heap/deque/ordered-set) to avoid linear scans.",
+                    "Improve I/O throughput; batch parsing and reduce conversions.",
+                    "Precompute invariants and cache expensive calls to eliminate repeated work.",
+                    "Adopt divide-and-conquer or search; structure recursion/iteration for clarity and speed.",
+                ],
+            )
+            try:
+                body = str(patterns[(idx - 1) % len(patterns)])
+            except Exception:
+                body = "Diversify algorithmic approach; improve core performance pragmatically."
             header = f"DIVERSIFIED STRATEGY {idx}"
-            if idx % 5 == 1:
-                body = "Prefer DP/graph over greedy; restructure loops with memoization."
-            elif idx % 5 == 2:
-                body = "Use alternative data structures (heap/deque/ordered-set) to avoid linear scans."
-            elif idx % 5 == 3:
-                body = "Improve I/O throughput; batch parsing and reduce conversions."
-            elif idx % 5 == 4:
-                body = "Precompute invariants and cache expensive calls to eliminate repeated work."
-            else:
-                body = "Adopt divide-and-conquer or search; structure recursion/iteration for clarity and speed."
             return f"{header}\n{body}"
 
         def _build_additional_requirements(strategy_text: str) -> str:
             """按 crossover 风格包装为 additional_requirements 文本，加入 PLAN STRATEGY 头部。"""
             st = textwrap.indent((strategy_text or "").strip(), "  ")
-            req = f"""
+            plan_cfg = (self.config.get("prompt_config", {}) or {}).get("plan", {})
+            header = plan_cfg.get("strategy_header") or (
+                """
 ### STRATEGY MODE: PLAN STRATEGY
 You must strictly follow and implement the outlined approach below.
-
-{st}
-"""
-            return req
+                """
+            )
+            parts = []
+            if isinstance(header, str) and header.strip():
+                parts.append(header.strip())
+            parts.append("\n" + st)
+            return "\n".join(parts)
 
         # 并发生成：每个实例生成 K 条策略
         def _work(inst_name: str) -> tuple[str, list[str]]:

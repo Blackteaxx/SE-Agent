@@ -831,6 +831,12 @@ class PerfAgent:
                 "success": bool(best_performance < initial_trimmed),
             }
 
+            try:
+                md_metrics, md_artifacts = self._build_metrics_and_artifacts(current_benchmark_results)
+                final_result["final_artifacts"] = self._format_artifacts_md(md_artifacts)
+            except Exception:
+                final_result["final_artifacts"] = None
+
             # 记录最终轨迹
             trajectory_file = trajectory.finalize(
                 success=final_result["success"],
@@ -862,10 +868,11 @@ class PerfAgent:
         # 以 Markdown 格式化，便于模型阅读
         current_metrics_str = self._format_metrics_md(metrics_dict)
         current_artifacts_str = self._format_artifacts_md(artifacts_dict)
+        current_program_md = f"```\n{current_program}\n```"
 
         try:
             return self.config.prompts.optimization_template.format(
-                current_program=current_program,
+                current_program=current_program_md,
                 current_metrics=current_metrics_str,
                 current_artifacts_section=current_artifacts_str,
                 language=language,
@@ -875,7 +882,7 @@ class PerfAgent:
             return (
                 "# Task\n"
                 "请分析以下程序信息，并根据系统提示生成 `## Thinking` 与 `## Diffs`：\n\n"
-                "## Current Program\n" + current_program + "\n\n"
+                "## Current Program\n" + current_program_md + "\n\n"
                 "## Current Metrics\n" + current_metrics_str + "\n\n"
                 "## Current Artifacts\n" + current_artifacts_str
             )
