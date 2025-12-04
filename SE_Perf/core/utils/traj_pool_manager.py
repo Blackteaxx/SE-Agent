@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Optional
 
+from core.utils.local_memory_manager import LocalMemoryManager
 from core.utils.se_logger import get_se_logger
 
 
@@ -401,6 +402,136 @@ class TrajPoolManager:
                 "label": label,
             }
 
+    def _gather_memory_context(
+        self, instance_name: str, res: dict[str, Any], pool_data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """
+        准备 Memory 模块所需的上下文信息。
+
+        Args:
+            instance_name: 实例名。
+            res: 当前轨迹结果字典。
+            pool_data: 整个轨迹池数据（用于查找 Source/Best）。
+
+        Returns:
+            包含 extract_and_update 所需参数的字典。
+        """
+        inst_entry = pool_data.get(str(instance_name)) or {}
+
+        # 1. Source Entries (Old Code & Context)
+        source_entries = []
+        src_labels = res.get("source_entry_labels")
+        if src_labels and isinstance(src_labels, list):
+            for sl in src_labels:
+                sl_str = str(sl)
+                if sl_str in inst_entry and isinstance(inst_entry[sl_str], dict):
+                    source_entries.append(inst_entry[sl_str])
+
+        # 2. Best Entry (Best Code & Context)
+        best_entry = None
+        best_label = self._best_labels.get(str(instance_name))
+        if not best_label:
+            best_label = self._select_best_label(inst_entry)
+
+        if best_label and str(best_label) in inst_entry:
+            best_entry = inst_entry[str(best_label)]
+
+        return {
+            "instance_name": str(instance_name),
+            "current_entry": res,
+            "source_entries": source_entries,
+            "best_entry": best_entry,
+            "problem_description": inst_entry.get("problem"),
+            "language": res.get("language"),
+            "optimization_target": res.get("optimization_target"),
+        }
+
+    def _process_single_trajectory_summary(self, item: dict[str, Any]) -> dict[str, Any] | None:
+        """
+        线程工作函数：总结单条轨迹并构建完整的 TrajectoryInfo 对象。
+        """
+        try:
+            best_solution_text = ""
+            try:
+                inst = str(item.get("instance_name") or "")
+                if inst:
+                    best_label = self.get_best_label(inst)
+                    if best_label:
+                        pool_data = self.load_pool()
+                        entry = pool_data.get(inst)
+                        if isinstance(entry, dict):
+                            cand = entry.get(str(best_label))
+                            if isinstance(cand, dict):
+                                best_solution_text = self.format_entry({str(best_label): cand})
+            except Exception:
+                best_solution_text = ""
+
+            target_solution_text = ""
+            try:
+                lab = str(item.get("label") or "target")
+                target_solution_text = self.format_entry(
+                    {
+                        lab: {
+                            "label": lab,
+                            "iteration": item.get("iteration"),
+                            "code": item.get("patch_content") or "",
+                            "perf_metrics": item.get("perf_metrics"),
+                            "performance": item.get("performance"),
+                            "operator_name": item.get("operator_name"),
+                        }
+                    }
+                )
+            except Exception:
+                target_solution_text = str(item.get("patch_content") or "")
+
+            summary = self.summarize_trajectory(
+                trajectory_content=item["trajectory_content"],
+                patch_content=item["patch_content"],
+                iteration=item["iteration"],
+                label=item["label"],
+                problem_description=item.get("problem_description"),
+                best_solution_text=best_solution_text,
+                target_solution_text=target_solution_text,
+            )
+
+            # 解析 .tra 原始内容为 JSON 对象，如果失败则作为原始文本
+            raw_content = item.get("trajectory_content")
+            if isinstance(raw_content, str):
+                try:
+                    trajectory_raw_obj = json.loads(raw_content)
+                except json.JSONDecodeError:
+                    self.logger.warning(
+                        f"无法将 trajectory_raw 解析为 JSON (标签: {item.get('label')})，将作为原始文本存储。"
+                    )
+                    trajectory_raw_obj = {"_raw_text": raw_content}
+            else:
+                trajectory_raw_obj = raw_content
+
+            # 从 item 或全局配置中获取语言和优化目标
+            cfg = self.prompt_config.get("summarizer", {}) if self.prompt_config else {}
+            lang = item.get("language") or cfg.get("language") or "Unknown"
+            target = item.get("optimization_target") or cfg.get("optimization_target") or "Runtime"
+
+            return {
+                "label": item["label"],
+                "instance_name": item["instance_name"],
+                "iteration": item["iteration"],
+                "performance": item.get("performance"),
+                "source_dir": item.get("source_dir"),
+                "summary": summary,
+                "problem_description": item.get("problem_description"),
+                "code": item["patch_content"],
+                "trajectory_raw": trajectory_raw_obj,
+                "source_entry_labels": item.get("source_entry_labels"),
+                "operator_name": item.get("operator_name"),
+                "perf_metrics": item.get("perf_metrics"),
+                "language": lang,
+                "optimization_target": target,
+            }
+        except Exception as e:
+            self.logger.error(f"并行轨迹总结任务失败 (标签 '{item.get('label')}'): {e}")
+            return None
+
     def summarize_and_add_trajectories(
         self, trajectories_to_process: list[dict[str, Any]], num_workers: int | None = None
     ) -> int:
@@ -431,87 +562,6 @@ class TrajPoolManager:
         if not trajectories_to_process:
             return 0
 
-        def _summarize_item(item: dict[str, Any]) -> dict[str, Any] | None:
-            """线程工作函数：总结轨迹并构建完整的 TrajectoryInfo 对象。"""
-            try:
-                best_solution_text = ""
-                try:
-                    inst = str(item.get("instance_name") or "")
-                    if inst:
-                        best_label = self.get_best_label(inst)
-                        if best_label:
-                            pool_data = self.load_pool()
-                            entry = pool_data.get(inst)
-                            if isinstance(entry, dict):
-                                cand = entry.get(str(best_label))
-                                if isinstance(cand, dict):
-                                    best_solution_text = self.format_entry({str(best_label): cand})
-                except Exception:
-                    best_solution_text = ""
-
-                target_solution_text = ""
-                try:
-                    lab = str(item.get("label") or "target")
-                    target_solution_text = self.format_entry(
-                        {
-                            lab: {
-                                "label": lab,
-                                "iteration": item.get("iteration"),
-                                "code": item.get("patch_content") or "",
-                                "perf_metrics": item.get("perf_metrics"),
-                                "performance": item.get("performance"),
-                                "operator_name": item.get("operator_name"),
-                            }
-                        }
-                    )
-                except Exception:
-                    target_solution_text = str(item.get("patch_content") or "")
-
-                summary = self.summarize_trajectory(
-                    trajectory_content=item["trajectory_content"],
-                    patch_content=item["patch_content"],
-                    iteration=item["iteration"],
-                    label=item["label"],
-                    problem_description=item.get("problem_description"),
-                    best_solution_text=best_solution_text,
-                    target_solution_text=target_solution_text,
-                )
-
-                # 在总结对象中附加来源标签，便于后续分析
-                if (src_labels := item.get("source_entry_labels")) is not None:
-                    summary["source_entry_labels"] = list(src_labels)
-
-                # 解析 .tra 原始内容为 JSON 对象，如果失败则作为原始文本
-                raw_content = item.get("trajectory_content")
-                if isinstance(raw_content, str):
-                    try:
-                        trajectory_raw_obj = json.loads(raw_content)
-                    except json.JSONDecodeError:
-                        self.logger.warning(
-                            f"无法将 trajectory_raw 解析为 JSON (标签: {item.get('label')})，将作为原始文本存储。"
-                        )
-                        trajectory_raw_obj = {"_raw_text": raw_content}
-                else:
-                    trajectory_raw_obj = raw_content
-
-                return {
-                    "label": item["label"],
-                    "instance_name": item["instance_name"],
-                    "iteration": item["iteration"],
-                    "performance": item.get("performance"),
-                    "source_dir": item.get("source_dir"),
-                    "summary": summary,
-                    "problem_description": item.get("problem_description"),
-                    "code": item["patch_content"],
-                    "trajectory_raw": trajectory_raw_obj,
-                    "source_entry_labels": item.get("source_entry_labels"),
-                    "operator_name": item.get("operator_name"),
-                    "perf_metrics": item.get("perf_metrics"),
-                }
-            except Exception as e:
-                self.logger.error(f"并行轨迹总结任务失败 (标签 '{item.get('label')}'): {e}")
-                return None
-
         try:
             cfg_workers = num_workers if num_workers is not None else self.num_workers
             max_workers = (
@@ -522,7 +572,8 @@ class TrajPoolManager:
             newly_completed_trajectories = defaultdict(list)
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_label = {
-                    executor.submit(_summarize_item, item): item["label"] for item in trajectories_to_process
+                    executor.submit(self._process_single_trajectory_summary, item): item["label"]
+                    for item in trajectories_to_process
                 }
                 for future in as_completed(future_to_label):
                     label = future_to_label[future]
@@ -567,37 +618,12 @@ class TrajPoolManager:
                         except Exception:
                             pass
 
-                        # 记忆提炼与更新（在写入前后均可，这里选择在写入前准备好上下文）
+                        # 记忆提炼与更新
                         try:
                             if self.memory_manager:
-                                # 查找上一条迭代的代码作为对比
-                                prev_code: str | None = None
-                                try:
-                                    # 从 existing 中找出迭代号较小且最大的条目
-                                    prev_entries = []
-                                    for k, v in existing.items():
-                                        if k == "problem":
-                                            continue
-                                        if isinstance(v, dict):
-                                            it = v.get("iteration")
-                                            if isinstance(it, int) and it < int(res.get("iteration") or 0):
-                                                prev_entries.append((it, v))
-                                    if prev_entries:
-                                        prev_entries.sort(key=lambda t: t[0], reverse=True)
-                                        prev_code = prev_entries[0][1].get("code")
-                                except Exception:
-                                    prev_code = None
-
-                                self.memory_manager.extract_and_update(
-                                    instance_name=inst_name,
-                                    iteration=int(res.get("iteration") or 0),
-                                    summary=res.get("summary") or {},
-                                    patch_content=str(res.get("code") or ""),
-                                    perf_metrics=res.get("perf_metrics"),
-                                    previous_code=prev_code,
-                                    current_label=str(res.get("label") or ""),
-                                    operator_name=str(res.get("operator_name") or ""),
-                                )
+                                ctx = self._gather_memory_context(inst_name, res, pool_data)
+                                # 即使没有 source entries (初始解)，也进行记忆更新，以记录初始方向
+                                self.memory_manager.extract_and_update(**ctx)
                         except Exception as me:
                             self.logger.warning(
                                 f"本地记忆提炼失败（实例 '{inst_name}' 标签 '{res.get('label')}'): {me}"
