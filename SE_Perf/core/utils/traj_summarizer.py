@@ -88,7 +88,7 @@ Return your analysis in JSON format with the following fields:
             return override
         return """Please analyze the following PerfAgent trajectory and provide insights about the solution approach.
 
- The trajectory tried to iteratively improve a given program in {language} for the problem described below, aiming to increase its **{optimization_target}**.
+The trajectory tried to iteratively improve a given program in {language} for the problem described below, aiming to increase its **{optimization_target}**.
 
 Problem Description:
 {problem_description}
@@ -174,9 +174,12 @@ Please provide your analysis in the JSON format specified in the system prompt."
         raise ValueError("响应中未找到可解析的JSON内容")
 
     def validate_response_format(self, response_data: dict[str, Any]) -> bool:
-        """
-        暂时禁用响应格式校验，统一返回 True。
-        """
+        if not isinstance(response_data, dict):
+            raise ValueError("响应数据必须为字典")
+        required_keys = ["solution_name", "approach_summary"]
+        missing = [k for k in required_keys if k not in response_data]
+        if missing:
+            raise ValueError(f"响应格式缺少键: {', '.join(missing)}")
         return True
 
     def create_fallback_summary(self, trajectory_content: str, patch_content: str, iteration: int) -> dict[str, Any]:

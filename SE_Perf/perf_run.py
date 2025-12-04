@@ -610,6 +610,16 @@ def _process_and_summarize(
                 source_labels_map=source_labels_map,
                 operator_name=operator_name,
             )
+            try:
+                mm = getattr(pool_manager, "memory_manager", None)
+                if mm is not None:
+                    mem = mm.load()
+                    ckpt_path = Path(iter_dir) / f"memory_iter_{iter_idx}.json"
+                    with open(ckpt_path, "w", encoding="utf-8") as f:
+                        json.dump(mem, f, ensure_ascii=False, indent=2)
+                    logger.info(f"已保存迭代 {iter_idx} 的记忆快照: {ckpt_path}")
+            except Exception as e:
+                logger.warning(f"保存迭代 {iter_idx} 记忆快照失败: {e}")
         else:
             logger.warning(f"迭代 {iter_idx} 未生成 .tra 文件")
     except Exception as e:

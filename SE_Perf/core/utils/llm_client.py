@@ -267,8 +267,8 @@ class TrajectorySummarizer:
                 response = self.llm_client.clean_think_tags(response)
                 self.logger.debug(f"LLM清理后响应 (迭代{iteration}, 第{attempt}次):\n{response}")
 
-                # 仅执行字符串到JSON的解析，格式不正确/解析失败会抛异常
                 summary = summarizer.parse_response(response)
+                summarizer.validate_response_format(summary)
 
                 self.logger.info(f"LLM轨迹总结成功 (迭代{iteration}, 第{attempt}次)")
                 return summary
@@ -277,8 +277,10 @@ class TrajectorySummarizer:
                 last_error = "json_decode_error"
                 self.logger.warning(f"LLM轨迹总结解析失败: JSON解析错误 (迭代{iteration}, 第{attempt}次): {e}")
             except ValueError as e:
-                last_error = "invalid_json_format"
-                self.logger.warning(f"LLM轨迹总结解析失败: 无有效JSON片段 (迭代{iteration}, 第{attempt}次): {e}")
+                last_error = "invalid_response_format"
+                self.logger.warning(
+                    f"LLM轨迹总结解析失败: 响应格式错误或无有效JSON片段 (迭代{iteration}, 第{attempt}次): {e}"
+                )
             except Exception as e:
                 last_error = "llm_call_failed"
                 self.logger.warning(f"LLM轨迹总结调用失败 (迭代{iteration}, 第{attempt}次): {e}")
