@@ -167,8 +167,8 @@ class LocalMemoryManager:
         current_entry: dict[str, Any] | None,
         best_entry: dict[str, Any] | None,
         current_directions: list[dict[str, Any]],
-        language: str = "Unknown",
-        optimization_target: str = "Runtime",
+        language: str = "",
+        optimization_target: str = "",
         current_solution_id: str | None = None,
     ) -> tuple[str, str]:
         """
@@ -276,28 +276,12 @@ You must output a single JSON object strictly adhering to this schema:
 ```json
 {
   "thought_process": "Briefly explain what algorithm the code uses (e.g., 'The code uses a hash map to store frequencies...').",
-  "updated_directions": [
-    {
+  "new_direction_item": {
       "direction": "Short strategy description (e.g., Approach: Dynamic Programming)",
-      "outcome": "Baseline", 
+      "outcome": "Baseline",
       "source_ref": "Current_Sol_ID",
       "evidence": "Initial implementation. Runtime: X ms."
     }
-  ],
-  "new_memory_item": {
-    "type": "Success",
-    "title": "Concise Title (e.g., DP Approach Initialization)",
-  "description": "One sentence summary of the algorithm used.",
-  "content": "Explanation of the algorithmic logic applied to this problem.",
-  "evidence": [
-    {
-      "solution_id": "Current_Sol_ID",
-      "code_change": "N/A (Initial Solution)",
-      "metrics_delta": "N/A (Baseline)",
-      "context": "Initial Valid Solution"
-    }
-  ]
-  }
 }
         """
 
@@ -337,7 +321,7 @@ You must output a single JSON object strictly adhering to this schema:
             try:
                 if TrajPoolManager and isinstance(entry, dict):
                     lbl = str(entry.get("label") or entry.get("solution_id") or "current")
-                    return TrajPoolManager.format_entry({lbl: entry})
+                    return TrajPoolManager.format_entry({lbl: entry}, include_keys={"code", "perf_metrics"})
             except Exception:
                 pass
             return "N/A"
@@ -374,7 +358,7 @@ You must output a single JSON object strictly adhering to this schema:
         system_prompt = """You are an expert Algorithm Optimization Specialist. You have just observed an evolutionary step where an agent **successfully optimized** a code solution.
 
 ## Goal
-Your task is to analyze the changes between the **Source Solution** and the **Current Solution**, explain *why* the performance improved, and update the agent's memory to guide future evolution.
+Your task is to analyze the code changes between the **Source Solution** and the **Current Solution**, explain *why* the performance improved, and update the agent's memory to guide future evolution.
 
 ## Guidelines for Memory Extraction
 
@@ -398,40 +382,41 @@ You will be given:
 
 ## Other Hints
 
-- Noise Consideration: If improvement < 3% or the absolute delta is within typical measurement jitter, treat as likely noise.
+- Noise/Neutral Classification: If the improvement is less than 3% or the absolute delta is within typical measurement jitter (e.g., < 0.05 seconds), classify the change as **Neutral** rather than Success.
+- Neutral Handling: When outcome is Neutral, you may set `new_memory_item` to `null` (no new knowledge) or provide a concise item with `type: "Neutral"` if a general lesson exists (keep it minimal).
 - Memory Item Limit: You can add 0-3 new memory items to the reasoning bank.
 
-## Output Format
-You must output a single JSON object strictly adhering to this schema:
+        ## Output Format
+        You must output a single JSON object strictly adhering to this schema:
 
-```json
-{
-  "thought_process": "Briefly explain your reasoning here (max 2 sentences).",
-  "updated_directions": [
-    {
-      "direction": "Short strategy description (e.g., Use Fast I/O)",
-      "outcome": "Success",
-      "source_ref": "Current_Sol_ID",
-      "evidence": "Reduced runtime from X ms to Y ms."
-    }
-    // ... Include other active directions, keeping the list concise (max 5 items)
-  ],
-  "new_memory_item": {
-    "type": "Success",
-    "title": "Concise Title (e.g., Bitwise Modulo Optimization)",
-  "description": "One sentence summary of the technique.",
-  "content": "Detailed insight on how to apply this optimization.",
-  "evidence": [
-    {
-      "solution_id": "Current_Sol_ID",
-      "code_change": "Brief snippet of what changed (e.g., i % 2 -> i & 1)",
-      "metrics_delta": "Exact improvement (e.g., -20ms)",
-      "context": "Conditions where this applies (e.g., when N is power of 2)"
-    }
-  ]
-  }
-}
-"""
+        ```json
+        {
+          "thought_process": "Briefly explain your reasoning here (max 2 sentences).",
+          "new_direction_item": {
+            "direction": "Short optimization strategy description (e.g., Use Fast I/O)",
+            "outcome": "Success" | "Neutral",
+            "source_ref": "Current_Sol_ID",
+            "evidence": "Reduced runtime from X ms to Y ms."
+          },
+          "new_memory_item": {
+            "type": "Success" | "Neutral",
+            "title": "Concise Title (e.g., Bitwise Modulo Optimization)",
+            "description": "One sentence summary of the technique.",
+            "content": "Detailed insight on how to apply this optimization.",
+            "evidence": [
+              {
+                "solution_id": "Current_Sol_ID",
+                "code_change": "Brief snippet of what changed (e.g., i % 2 -> i & 1)",
+                "metrics_delta": "Exact improvement (e.g., -20ms)",
+                "context": "Conditions where this applies (e.g., when N is power of 2)"
+              }
+            ]
+          }
+        }
+        ```
+
+        Note: If the outcome is Neutral, set `new_direction_item.outcome` to "Neutral" and `new_memory_item` to `null` or an item with `type: "Neutral"`.
+        """
         user_template = """
         
 ## Optimization Target
@@ -472,7 +457,7 @@ You must output a single JSON object strictly adhering to this schema:
             try:
                 if TrajPoolManager and isinstance(entry, dict):
                     lbl = str(entry.get("label") or entry.get("solution_id") or "current")
-                    return TrajPoolManager.format_entry({lbl: entry})
+                    return TrajPoolManager.format_entry({lbl: entry}, include_keys={"code", "perf_metrics"})
             except Exception:
                 pass
             return "N/A"
@@ -541,40 +526,41 @@ You will be given:
 
 ## Other Hints
 
-- Noise Consideration: If improvement < 3% or the absolute delta is within typical measurement jitter, treat as likely noise.
+- Noise/Neutral Classification: If the regression is less than 3% or the absolute delta is within typical measurement jitter (e.g., < 0.05 seconds), classify the change as **Neutral** rather than Failure.
+- Neutral Handling: When outcome is Neutral, you may set `new_memory_item` to `null` (no new knowledge) or provide a concise item with `type: "Neutral"` if a general lesson exists (keep it minimal).
 - Memory Item Limit: You can add 0-3 new memory items to the reasoning bank.
 
-## Output Format
-You must output a single JSON object strictly adhering to this schema:
+        ## Output Format
+        You must output a single JSON object strictly adhering to this schema:
 
-```json
-{
-  "thought_process": "Briefly explain your reasoning here (max 2 sentences).",
-  "updated_directions": [
-    {
-      "direction": "Short strategy description (e.g., Use Fast I/O)",
-      "outcome": "Success",
-      "source_ref": "Current_Sol_ID",
-      "evidence": "Reduced runtime from X ms to Y ms."
-    }
-    // ... Include other active directions, keeping the list concise (max 5 items)
-  ],
-  "new_memory_item": {
-    "type": "Success",
-    "title": "Concise Title (e.g., Bitwise Modulo Optimization)",
-  "description": "One sentence summary of the technique.",
-  "content": "Detailed insight on how to apply this optimization.",
-  "evidence": [
-    {
-      "solution_id": "Current_Sol_ID",
-      "code_change": "Brief snippet of what changed (e.g., i % 2 -> i & 1)",
-      "metrics_delta": "Exact improvement (e.g., -20ms)",
-      "context": "Conditions where this applies (e.g., when N is power of 2)"
-    }
-  ]
-  }
-}
-"""
+        ```json
+        {
+          "thought_process": "Briefly explain your reasoning here (max 2 sentences).",
+          "new_direction_item": {
+            "direction": "Short strategy description (e.g., Use Fast I/O)",
+            "outcome": "Failed" | "Neutral",
+            "source_ref": "Current_Sol_ID",
+            "evidence": "Increased runtime from X ms to Y ms or caused incorrectness."
+          },
+          "new_memory_item": {
+            "type": "Failure" | "Neutral",
+            "title": "Concise Title (e.g., Recursion Stack Overhead)",
+            "description": "One sentence summary of the failed technique.",
+            "content": "Detailed insight on why this approach failed and under what conditions.",
+            "evidence": [
+              {
+                "solution_id": "Current_Sol_ID",
+                "code_change": "Brief snippet of what changed (e.g., for-loop to recursive call)",
+                "metrics_delta": "Exact regression (e.g., +50ms)",
+                "context": "Conditions where this is a bad idea (e.g., when recursion depth is high)"
+              }
+            ]
+          }
+        }
+        ```
+
+        Note: If the outcome is Neutral, set `new_direction_item.outcome` to "Neutral" and `new_memory_item` to `null` or an item with `type: "Neutral"`.
+        """
         user_template = """
         
 ## Optimization Target
@@ -615,7 +601,7 @@ You must output a single JSON object strictly adhering to this schema:
             try:
                 if TrajPoolManager and isinstance(entry, dict):
                     lbl = str(entry.get("label") or entry.get("solution_id") or "current")
-                    return TrajPoolManager.format_entry({lbl: entry})
+                    return TrajPoolManager.format_entry({lbl: entry}, include_keys={"code", "perf_metrics"})
             except Exception:
                 pass
             return "N/A"
@@ -669,25 +655,28 @@ You must output a single JSON object strictly adhering to this schema:
     def _validate_memory_response(self, data: dict[str, Any]) -> None:
         if not isinstance(data, dict):
             raise ValueError("响应数据必须为JSON对象")
-        required_top = ["updated_directions", "new_memory_item"]
+        # new_memory_item 可以在 Neutral 情况下为 null；也允许初始/噪声场景下为 null
+        required_top = ["new_direction_item"]
         missing_top = [k for k in required_top if k not in data]
         if missing_top:
             raise ValueError(f"响应格式缺少键: {', '.join(missing_top)}")
-        if not isinstance(data.get("updated_directions"), list):
-            raise ValueError("updated_directions必须为列表")
+
+        if data.get("new_direction_item") is None:
+            return
+
+        if not isinstance(data.get("new_direction_item"), dict):
+            raise ValueError("new_direction_item必须为对象")
         item = data.get("new_memory_item")
+        if item is None:
+            # 允许为 null
+            return
         if not isinstance(item, dict):
             raise ValueError("new_memory_item必须为对象")
+
         required_item = ["type", "title", "description", "content", "evidence"]
         missing_item = [k for k in required_item if k not in item]
         if missing_item:
             raise ValueError(f"new_memory_item缺少键: {', '.join(missing_item)}")
-        ev = item.get("evidence")
-        if not isinstance(ev, list):
-            raise ValueError("new_memory_item.evidence必须为列表")
-        for e in ev:
-            if not isinstance(e, dict):
-                raise ValueError("evidence项必须为对象")
 
     def compress_if_needed(self, memory: dict[str, Any]) -> None:
         try:
@@ -712,9 +701,13 @@ You must output a single JSON object strictly adhering to this schema:
                     self.logger.debug(f"LLM清理后响应 (压缩，第{attempt}次):\n{llm_response}")
                     parsed = self._parse_llm_json(llm_response)
                     self._validate_compress_response(parsed)
+                    ad = parsed.get("attempted_directions")
+                    if isinstance(ad, list):
+                        memory["attempted_directions"] = ad
                     rb = parsed.get("reasoning_bank")
                     if isinstance(rb, list):
                         memory["reasoning_bank"] = rb
+
                     self.logger.info("LLM记忆压缩成功")
                     break
                 except ValueError as e:
@@ -729,44 +722,65 @@ You must output a single JSON object strictly adhering to this schema:
             self.logger.warning(f"压缩记忆失败: {e}")
 
     def _build_compress_prompts(self, memory: dict[str, Any], token_limit: int) -> tuple[str, str]:
-        # 1. System Prompt: 强调结构化证据的聚合
+        # 1. System Prompt: 同时管理 Reasoning Bank 和 Directions
         system_prompt = """You are the **Chief Knowledge Officer** for an evolutionary coding agent.
-Your goal is to maintain a high-quality, token-efficient 'Reasoning Bank' by compressing the agent's current memory.
+Your goal is to compress and consolidate the agent's entire memory (Reasoning Bank + Attempted Directions) to fit within token limits while preserving high-value insights.
 
-## Compression Strategy
-1. **Consolidate (Merge)**: Group insights that utilize the *same* algorithmic strategy or optimization technique.
-2. **Aggregate Evidence**: When merging items, you must **collect their evidence objects** into a single list.
-- **Do NOT** summarize the evidence into a string. Keep the JSON object structure (`solution_id`, `code_change`, etc.).
-- **Limit Evidence**: If a merged item has more than 3 pieces of evidence, keep only the **Top-3 most distinct or impactful** ones to save space.
-3. **Filter**: Remove low-value items (trivial improvements < 1%) unless they represent a unique direction.
+## Task 1: Consolidate Reasoning Bank (Deep Knowledge)
+1. **Merge**: Group insights covering the same core strategy (e.g., merge "Bitwise Mod" and "Bitwise And Opt").
+2. **Aggregate Evidence**: For merged items, collect their structural evidence objects into a single list.
+    - Limit to **Top-3** most distinct/impactful evidence items per strategy.
+    - Keep the exact schema: `solution_id`, `code_change`, `metrics_delta`, `context`.
+3. **Filter**: Discard low-impact items (<1% gain) unless unique.
 
-## Output Constraints
-- **Format**: Output a SINGLE JSON object containing the key `"reasoning_bank"`.
-- **Item Limit**: Keep the total number of consolidated items between 3 and 10.
-- **Schema**: Each item must strictly follow this structure:
+## Task 2: Refine Attempted Directions (High-Level Guide)
+1. **Deduplicate**: Merge identical or highly similar directions (e.g., "Use Fast I/O" and "Switch to scanf").
+2. **Resolve Conflicts**: If a direction appears as both "Success" and "Failed":
+    - If the latest attempt succeeded, mark as "Success" (and note the caveat in evidence).
+    - If it consistently fails now, mark as "Failed".
+    - If changes are within jitter (e.g., < 3% or < 0.05s absolute), mark as **Neutral**.
+3. **Prune**: Remove directions that are vague, obsolete, or fully covered by a "Reasoning Bank" item (don't need to track it as a "direction" if it's already a proven "knowledge").
+4. **Limit**: Keep the list concise (max 5-8 active directions).
+
+## Output Format
+Output a SINGLE JSON object with keys:
+```json
 {
-    "type": "Success" | "Failure",
-    "title": "Concise Strategy Title",
-    "description": "One sentence summary",
-    "content": "Detailed technical explanation",
-    "evidence": [
+    "thought_process": "Briefly explain your reasoning here (max 2 sentences).",
+    "attempted_directions": [
         {
-        "solution_id": "GenX_SolY", 
-        "code_change": "Brief snippet (e.g., 'dp[i] % 2 -> dp[i] & 1')", 
-        "metrics_delta": "Key impact (e.g., 'Runtime: 150ms -> 120ms')",
-        "context": "Brief condition (e.g., 'Effective when MOD is power of 2')"
+        "direction": "Concise strategy name",
+        "outcome": "Success" | "Failed" | "Neutral",
+        "source_ref": "Most relevant Solution ID (Single String)",
+        "evidence": "Brief text summary of the outcome (2-3 sentences)"
         }
-        // ... Merge evidence from combined items here (Max 3)
-    ]
+    ],
+    "reasoning_bank": [
+        {
+        "type": "Success" | "Failure" | "Neutral",
+        "title": "...",
+        "description": "...",
+        "content": "...",
+        "related_operator": "...",
+        "evidence": [ 
+            {"solution_id": "...", "code_change": "...", "metrics_delta": "...", "context": "..."}
+        ]
+        }
+    ],
 }
-"""
+        """
 
         # 2. User Prompt: 注入当前数据
-        current_bank_json = json.dumps(memory.get("reasoning_bank", []), indent=2)
+        data_to_compress = {
+            "reasoning_bank": memory.get("reasoning_bank", []),
+            "attempted_directions": memory.get("attempted_directions", []),
+        }
+
+        current_memory_json = json.dumps(data_to_compress, indent=2)
 
         user_prompt = f"""
 ## Current Reasoning Bank (Overfilled)
-{current_bank_json}
+{current_memory_json}
 
 ## Task
 The current memory is too fragmented. 
@@ -796,6 +810,15 @@ Output ONLY the valid JSON object.
             for e in ev:
                 if not isinstance(e, dict):
                     raise ValueError("evidence项必须为对象")
+        ad = data.get("attempted_directions")
+        if not isinstance(ad, list):
+            raise ValueError("attempted_directions必须为列表")
+        for item in ad:
+            if not isinstance(item, dict):
+                raise ValueError("attempted_directions项必须为对象")
+            for k in ("direction", "outcome", "source_ref", "evidence"):
+                if k not in item:
+                    raise ValueError(f"attempted_directions项缺少键: {k}")
 
     def extract_and_update(
         self,
@@ -806,7 +829,6 @@ Output ONLY the valid JSON object.
         problem_description: str | None = None,
         language: str | None = None,
         optimization_target: str | None = None,
-        **kwargs: Any,
     ) -> None:
         """
         根据一次迭代的总结与性能数据，进行记忆提炼并更新本地记忆库。
@@ -825,13 +847,8 @@ Output ONLY the valid JSON object.
 
         # Extract data from entries
         iteration = int(current_entry.get("iteration") or 0)
-        summary = current_entry.get("summary") or {}
         perf_metrics = current_entry.get("perf_metrics")
         current_label = str(current_entry.get("label") or "")
-        operator_name = str(current_entry.get("operator_name") or "")
-        problem_description = str(kwargs.get("problem_description") or "")
-        language = str(kwargs.get("language") or "Unknown")
-        optimization_target = str(kwargs.get("optimization_target") or "Runtime")
 
         # 计算性能差异（old vs new）
         perf_old = None
@@ -870,8 +887,8 @@ Output ONLY the valid JSON object.
         except Exception:
             pass
 
-        # LLM 提炼：更新 Directions + 生成 Reasoning Item
-        updated_directions: list[dict[str, Any]] = attempted
+        # LLM 提炼：生成 Direction Item + 生成 Reasoning Item
+        new_direction_item: dict[str, Any] | None = None
         new_memory_item: dict[str, Any] | None = None
         if self.llm_client:
             try:
@@ -902,8 +919,8 @@ Output ONLY the valid JSON object.
                         self.logger.debug(f"LLM清理后响应 (第{attempt}次):\n{llm_response}")
                         parsed_response = self._parse_llm_json(llm_response)
                         self._validate_memory_response(parsed_response)
-                        if isinstance(parsed_response.get("updated_directions"), list):
-                            updated_directions = parsed_response["updated_directions"]
+                        if isinstance(parsed_response.get("new_direction_item"), dict):
+                            new_direction_item = parsed_response["new_direction_item"]
                         extracted_item = parsed_response.get("new_memory_item")
                         if isinstance(extracted_item, dict):
                             new_memory_item = extracted_item
@@ -920,40 +937,16 @@ Output ONLY the valid JSON object.
             except Exception as e:
                 self.logger.warning(f"LLM记忆提炼失败，使用规则回退: {e}")
 
-        # 规则回退：若未生成项，则根据 perf_diff 简单追加一条经验
-        if new_memory_item is None:
-            try:
-                perf_delta_str = self._format_metrics_delta(perf_old, perf_new)
-                item_type = (
-                    "Success" if (perf_old is not None and perf_new is not None and perf_new < perf_old) else "Failure"
-                )
-                new_memory_item = {
-                    "type": item_type,
-                    "title": "Performance Change",
-                    "description": "Observed performance change between iterations.",
-                    "content": summary.get("approach_summary") or "",
-                    "evidence": [
-                        {
-                            "solution_id": current_label,
-                            "code_change": "see diff head/tail",
-                            "metrics_delta": perf_delta_str,
-                            "context": (
-                                summary.get("analysis", {}).get("best_strategy", {}).get("high_level")
-                                if isinstance(summary.get("analysis"), dict)
-                                else None
-                            ),
-                        }
-                    ],
-                }
-            except Exception:
-                pass
+        if new_direction_item:
+            if not isinstance(memory.get("attempted_directions"), list):
+                memory["attempted_directions"] = []
+            memory["attempted_directions"].append(new_direction_item)
 
-        # 写回：更新 Directions（全量替换）与追加 Reasoning 项
-        memory["attempted_directions"] = list(updated_directions or [])
-        if isinstance(new_memory_item, dict):
-            bank = memory.get("reasoning_bank") or []
-            bank.append(new_memory_item)
-            memory["reasoning_bank"] = bank
+        if new_memory_item:
+            if isinstance(new_memory_item, dict):
+                bank = memory.get("reasoning_bank") or []
+                bank.append(new_memory_item)
+                memory["reasoning_bank"] = bank
 
         # 更新全局状态
         gs = memory.get("global_status") or {}

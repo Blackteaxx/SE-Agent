@@ -140,8 +140,10 @@ def run_single_instance(
                 with open(traj_path, "r", encoding="utf-8") as tf:
                     traj_json = json.load(tf)
                 info = traj_json.get("info") or traj_json.get("metadata") or {}
-                # 优先使用轨迹中的最终最佳代码；若缺失则回退到 submission
-                submission_code = info.get("final_best_code") or info.get("submission", "")
+                # 优先使用轨迹中的最终最新提交代码；若缺失再回退
+                submission_code = (
+                    info.get("final_best_code") or info.get("submission") or info.get("final_submission_code") or ""
+                )
             pred_file = instance_output_dir / f"{task_name}.pred"
             with open(pred_file, "w", encoding="utf-8") as pf:
                 pf.write(submission_code or "")

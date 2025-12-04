@@ -496,6 +496,7 @@ class PerfAgent:
             current_code = initial_code
             best_performance = float("inf")
             best_code = initial_code
+            latest_optimized_code = current_code
 
             # 评估初始性能
             step_id = trajectory.start_step(
@@ -542,7 +543,7 @@ class PerfAgent:
             best_pass_rate = _extract_pass_rate(initial_performance)
             target = self.config.optimization.target
             init_metric = initial_evaluation_summary["performance_analysis"].get(target, float("inf"))
-            if init_metric < best_performance:
+            if init_metric <= best_performance:
                 best_performance = init_metric
                 best_code = current_code
 
@@ -645,6 +646,7 @@ class PerfAgent:
 
                     # 评估优化后的性能，并将结果作为 performance_metrics 附加到 generate_optimization
                     try:
+                        latest_optimized_code = optimized_code
                         self.logger.info("开始评估优化后的代码性能")
                         performance_result = self._evaluate_performance(language, optimized_code, test_cases, inst)
 
@@ -821,7 +823,7 @@ class PerfAgent:
             final_result = {
                 "instance_id": instance_id,
                 "initial_code": initial_code,
-                "optimized_code": best_code,
+                "optimized_code": latest_optimized_code,
                 "initial_performance": initial_trimmed,
                 "final_performance": best_performance,
                 # 总迭代数 = 初始评估(若存在) + 实际优化循环次数
@@ -841,7 +843,7 @@ class PerfAgent:
             trajectory_file = trajectory.finalize(
                 success=final_result["success"],
                 final_performance={"target": self.config.optimization.target, "trimmed_mean": best_performance},
-                final_submission_code=best_code,
+                final_submission_code=latest_optimized_code,
             )
 
             final_result["trajectory_file"] = trajectory_file

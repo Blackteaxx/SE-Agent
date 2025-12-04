@@ -30,6 +30,8 @@ class LLMClient:
         self.logger = get_se_logger("llm_client", emoji="🤖")
         self.token_log_path = os.getenv("SE_TOKEN_LOG_PATH")
         self._token_lock = threading.Lock()
+        self.io_log_path = os.getenv("SE_LLM_IO_LOG_PATH")
+        self._io_lock = threading.Lock()
 
         # 验证必需的配置参数
         required_keys = ["name", "api_base", "api_key"]
@@ -139,6 +141,30 @@ class LLMClient:
                                     f.write(json.dumps(entry, ensure_ascii=False) + "\n")
                     except Exception:
                         pass
+
+                try:
+                    if self.io_log_path:
+                        io_entry = {
+                            "ts": time.time(),
+                            "context": usage_context or "se_perf",
+                            "model": model_name,
+                            "temperature": temperature,
+                            "max_tokens": max_tokens,
+                            "attempt_index": attempt,
+                            "messages": messages,
+                            "response": content,
+                        }
+                        if getattr(response, "usage", None):
+                            io_entry["usage"] = {
+                                "prompt_tokens": getattr(response.usage, "prompt_tokens", None),
+                                "completion_tokens": getattr(response.usage, "completion_tokens", None),
+                                "total_tokens": getattr(response.usage, "total_tokens", None),
+                            }
+                        with self._io_lock:
+                            with open(self.io_log_path, "a", encoding="utf-8") as f:
+                                f.write(json.dumps(io_entry, ensure_ascii=False) + "\n")
+                except Exception:
+                    pass
 
                 return content
 

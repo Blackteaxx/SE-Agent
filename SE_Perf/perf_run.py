@@ -34,76 +34,6 @@ from operators import create_operator
 # --- 辅助函数 ---
 
 
-def _prepare_initial_code_dir(
-    initial_code_dir: Path, input_labels: list[str], traj_pool_manager: TrajPoolManager, logger
-) -> Path | None:
-    """
-    准备初始代码目录：从轨迹池中提取指定标签的代码，写入到 initial_code_dir。
-
-    Args:
-        initial_code_dir: 目标目录路径
-        input_labels: 需要提取的轨迹标签列表
-        traj_pool_manager: 轨迹池管理器实例
-        logger: 日志记录器
-
-    Returns:
-        成功写入代码的目录路径，如果失败或无代码则返回 None
-    """
-    try:
-        initial_code_dir.mkdir(parents=True, exist_ok=True)
-        written_instances: set[str] = set()
-
-        pool_data = traj_pool_manager.get_all_trajectories() or {}
-
-        for label in input_labels:
-            # 查找包含该标签的实例
-            found_instance_name = None
-            found_entry = None
-
-            for instance_name, entry in pool_data.items():
-                if not isinstance(entry, dict):
-                    continue
-                if label in entry and isinstance(entry[label], dict):
-                    found_instance_name = str(instance_name)
-                    found_entry = entry[label]
-                    break
-
-            if not found_instance_name or not isinstance(found_entry, dict):
-                logger.warning(f"初始代码准备：未找到轨迹标签 '{label}'")
-                continue
-
-            # 优先使用 content，其次尝试从 summary 中获取 code
-            code = found_entry.get("content")
-            if not code:
-                summary = found_entry.get("summary") or {}
-                final_solution = summary.get("final_solution") or {}
-                code = final_solution.get("code") or ""
-
-            if not code:
-                logger.warning(f"初始代码准备：轨迹 '{label}' 缺少代码内容")
-                continue
-
-            if found_instance_name in written_instances:
-                logger.info(f"初始代码准备：实例 '{found_instance_name}' 已存在，跳过重复标签 '{label}'")
-                continue
-
-            file_path = initial_code_dir / f"{found_instance_name}.py"
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(code)
-
-            written_instances.add(found_instance_name)
-
-        if not written_instances:
-            logger.warning("初始代码准备：没有任何代码文件被写入")
-            return None
-
-        return initial_code_dir
-
-    except Exception as e:
-        logger.error(f"初始代码准备失败: {e}")
-        return None
-
-
 def _execute_operator_step(
     step_config: dict[str, Any],
     se_config: dict[str, Any],
@@ -733,8 +663,9 @@ def main():
         logger.info(f"启动执行: {args.config}, 模式: {args.mode}")
         logger.info(f"输出目录: {output_dir}")
 
-        # Token 统计文件路径
+        # Token统计与LLM I/O日志文件路径
         os.environ["SE_TOKEN_LOG_PATH"] = str(Path(output_dir) / "token_usage.jsonl")
+        os.environ["SE_LLM_IO_LOG_PATH"] = str(Path(output_dir) / "llm_io.jsonl")
 
         # 3. 初始化核心组件
         traj_pool_path = os.path.join(output_dir, "traj.pool")
@@ -759,6 +690,14 @@ def main():
                 logger.info("LocalMemoryManager 已启用")
             except Exception as e:
                 logger.warning(f"LocalMemoryManager 初始化失败: {e}")
+
+        local_memory_text = None
+        try:
+            if local_memory is not None:
+                mem = local_memory.load()
+                local_memory_text = local_memory.render_as_markdown(mem)
+        except Exception:
+            local_memory_text = None
 
         # Trajectory Pool Manager
         traj_pool_manager = TrajPoolManager(
@@ -794,6 +733,13 @@ def main():
                 "num_workers": se_config.get("num_workers", 1),
             }
 
+            try:
+                if local_memory is not None:
+                    _mem_latest = local_memory.load()
+                    local_memory_text = local_memory.render_as_markdown(_mem_latest)
+            except Exception:
+                pass
+
             # --- 分支 A: Plan 算子 (特殊处理: 展开为多实例配置) ---
             if operator_name == "plan":
                 logger.info("执行算子: Plan")
@@ -816,10 +762,28 @@ def main():
                     sys_prompt_dir = Path(plan_iter_dir) / "system_prompt"
                     sys_prompt_dir.mkdir(parents=True, exist_ok=True)
 
+                    rendered_template = None
+                    try:
+                        base_cfg_path = step_config.get("perf_base_config")
+                        if base_cfg_path:
+                            with open(base_cfg_path, encoding="utf-8") as f:
+                                base_cfg_data = yaml.safe_load(f) or {}
+                            tmpl = (base_cfg_data.get("prompts", {}) or {}).get("system_template")
+                            if isinstance(tmpl, str) and tmpl:
+                                if local_memory_text:
+                                    rendered_template = tmpl.replace("{local_memory}", str(local_memory_text))
+                                else:
+                                    rendered_template = tmpl
+                    except Exception:
+                        rendered_template = None
+
                     for inst_name, req in per_inst_reqs.items():
                         try:
+                            data = {"prompts": {"additional_requirements": str(req)}}
+                            if isinstance(rendered_template, str) and rendered_template:
+                                data["prompts"]["system_template"] = rendered_template
                             with open(sys_prompt_dir / f"{inst_name}.yaml", "w", encoding="utf-8") as f:
-                                yaml.safe_dump({"prompts": {"additional_requirements": str(req)}}, f)
+                                yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
                         except Exception:
                             pass
 
@@ -884,6 +848,56 @@ def main():
                 if is_filter_operator:
                     logger.info("Filter 算子执行完毕，跳过后续 PerfAgent 运行")
                     continue
+
+                rendered_template = None
+                try:
+                    base_cfg_path = step_config.get("perf_base_config")
+                    if base_cfg_path:
+                        with open(base_cfg_path, encoding="utf-8") as f:
+                            base_cfg_data = yaml.safe_load(f) or {}
+                        tmpl = (base_cfg_data.get("prompts", {}) or {}).get("system_template")
+                        if isinstance(tmpl, str) and tmpl:
+                            if local_memory_text:
+                                rendered_template = tmpl.replace("{local_memory}", str(local_memory_text))
+                            else:
+                                rendered_template = tmpl
+                except Exception:
+                    rendered_template = None
+
+                if isinstance(rendered_template, str) and rendered_template:
+                    try:
+                        if instance_templates_dir:
+                            p = Path(instance_templates_dir)
+                            if p.exists():
+                                for fp in p.glob("*.yaml"):
+                                    try:
+                                        with open(fp, encoding="utf-8") as f:
+                                            d = yaml.safe_load(f) or {}
+                                        pm = d.get("prompts") or {}
+                                        pm["system_template"] = rendered_template
+                                        d["prompts"] = pm
+                                        with open(fp, "w", encoding="utf-8") as f:
+                                            yaml.safe_dump(d, f, allow_unicode=True, sort_keys=False)
+                                    except Exception:
+                                        pass
+                        else:
+                            sys_prompt_dir = Path(current_iter_dir) / "system_prompt"
+                            sys_prompt_dir.mkdir(parents=True, exist_ok=True)
+                            inst_dir = Path(iter_params.get("instances_dir") or "")
+                            for fp in inst_dir.glob("*.json"):
+                                try:
+                                    with open(sys_prompt_dir / f"{fp.stem}.yaml", "w", encoding="utf-8") as f:
+                                        yaml.safe_dump(
+                                            {"prompts": {"system_template": rendered_template}},
+                                            f,
+                                            allow_unicode=True,
+                                            sort_keys=False,
+                                        )
+                                except Exception:
+                                    pass
+                            instance_templates_dir = str(sys_prompt_dir)
+                    except Exception:
+                        pass
 
             # 设置算子输出参数
             iter_params["operator_params"] = {}

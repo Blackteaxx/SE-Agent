@@ -451,6 +451,18 @@ class TrajPoolManager:
         线程工作函数：总结单条轨迹并构建完整的 TrajectoryInfo 对象。
         """
         try:
+            # 从 prompt_config.summarizer.enable_summary 读取是否执行LLM总结；默认 True
+            do_summary = True
+            try:
+                summarizer_cfg = (
+                    self.prompt_config.get("summarizer", {}) if isinstance(self.prompt_config, dict) else {}
+                )
+                flag = summarizer_cfg.get("enable_summary")
+                if isinstance(flag, bool):
+                    do_summary = flag
+            except Exception:
+                pass
+
             best_solution_text = ""
             try:
                 inst = str(item.get("instance_name") or "")
@@ -484,15 +496,26 @@ class TrajPoolManager:
             except Exception:
                 target_solution_text = str(item.get("patch_content") or "")
 
-            summary = self.summarize_trajectory(
-                trajectory_content=item["trajectory_content"],
-                patch_content=item["patch_content"],
-                iteration=item["iteration"],
-                label=item["label"],
-                problem_description=item.get("problem_description"),
-                best_solution_text=best_solution_text,
-                target_solution_text=target_solution_text,
-            )
+            summary = None
+            if do_summary:
+                summary = self.summarize_trajectory(
+                    trajectory_content=item["trajectory_content"],
+                    patch_content=item["patch_content"],
+                    iteration=item["iteration"],
+                    label=item["label"],
+                    problem_description=item.get("problem_description"),
+                    best_solution_text=best_solution_text,
+                    target_solution_text=target_solution_text,
+                )
+            else:
+                summary = {
+                    "meta": {"is_fallback": True, "reason": "summary_disabled"},
+                    "approach_summary": "Summary disabled by config.",
+                    "strategy": None,
+                    "specific_techniques": None,
+                    "modified_files": [],
+                    "key_changes": [],
+                }
 
             # 解析 .tra 原始内容为 JSON 对象，如果失败则作为原始文本
             raw_content = item.get("trajectory_content")
@@ -527,6 +550,7 @@ class TrajPoolManager:
                 "perf_metrics": item.get("perf_metrics"),
                 "language": lang,
                 "optimization_target": target,
+                "meta": {"summary_enabled": bool(do_summary)},
             }
         except Exception as e:
             self.logger.error(f"并行轨迹总结任务失败 (标签 '{item.get('label')}'): {e}")
@@ -622,8 +646,13 @@ class TrajPoolManager:
                         try:
                             if self.memory_manager:
                                 ctx = self._gather_memory_context(inst_name, res, pool_data)
-                                # 即使没有 source entries (初始解)，也进行记忆更新，以记录初始方向
-                                self.memory_manager.extract_and_update(**ctx)
+                                # 如果有 source entries，才进行记忆提炼与更新
+                                if ctx.get("source_entries"):
+                                    self.memory_manager.extract_and_update(**ctx)
+                                else:
+                                    self.logger.info(
+                                        f"实例 '{inst_name}' 标签 '{res.get('label')}' 无 source entries，跳过记忆提炼与更新。"
+                                    )
                         except Exception as me:
                             self.logger.warning(
                                 f"本地记忆提炼失败（实例 '{inst_name}' 标签 '{res.get('label')}'): {me}"
@@ -722,7 +751,7 @@ class TrajPoolManager:
                     continue
 
     @staticmethod
-    def format_entry(approaches_data: dict[str, Any]) -> str:
+    def format_entry(approaches_data: dict[str, Any], include_keys: set[str] | None = None) -> str:
         if not isinstance(approaches_data, dict) or not approaches_data:
             return ""
 
@@ -786,6 +815,9 @@ class TrajPoolManager:
                 lines: list[str] = []
                 for k, v in val.items():
                     if str(k) in {"trajectory_raw", "source_dir"}:
+                        continue
+                    # include_keys 仅作用于顶层：当 level==0 时过滤；子层级全部格式化
+                    if level == 0 and include_keys is not None and str(k) not in include_keys:
                         continue
                     key_line = f"{indent_str(level)}{k}:"
                     code_key = str(k) in {
