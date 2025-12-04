@@ -7,7 +7,7 @@ PerfAgent 配置系统
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal
 
 import yaml
 
@@ -19,8 +19,8 @@ class ModelConfig:
     """模型配置"""
 
     name: str = "gpt-4"
-    api_base: Optional[str] = None
-    api_key: Optional[str] = None
+    api_base: str | None = None
+    api_key: str | None = None
     temperature: float = 0.1
     max_input_tokens: int = 4000
     max_output_tokens: int = 4000
@@ -41,6 +41,7 @@ class OptimizationConfig:
     enable_memory_checks: bool = True
     enable_runtime_checks: bool = True
     adopt_only_if_improved: bool = False
+    code_generation_mode: Literal["diff", "direct"] = "diff"
 
 
 @dataclass
@@ -67,9 +68,9 @@ class PromptConfig:
     system_template: str = ""
     optimization_template: str = ""
     # 额外的系统提示内容：用于格式化到模板中的 {additional_requirements}
-    additional_requirements: Optional[str] = None
+    additional_requirements: str | None = None
     # 实例系统模板附加内容目录（包含若干 YAML 文件）（兼容旧流程）
-    instance_templates_dir: Optional[Path] = None
+    instance_templates_dir: Path | None = None
     include_all_history: bool = False
     local_memory: Optional[str] = None
 
@@ -77,7 +78,7 @@ class PromptConfig:
 @dataclass
 class LanguageConfig:
     language: str = "python3"
-    supported_languages: List[str] = field(default_factory=lambda: ["python3", "cpp", "java", "javascript", "golang"])
+    supported_languages: list[str] = field(default_factory=lambda: ["python3", "cpp", "java", "javascript", "golang"])
 
 
 @dataclass
@@ -88,8 +89,8 @@ class OverridesConfig:
     - initial_code_text: 直接提供初始代码文本（优先于目录）
     """
 
-    initial_code_dir: Optional[Path] = None
-    initial_code_text: Optional[str] = None
+    initial_code_dir: Path | None = None
+    initial_code_text: str | None = None
 
 
 @dataclass
@@ -203,7 +204,7 @@ class PerfAgentConfig:
         if self.optimization.target not in ("runtime", "memory", "integral"):
             raise ValueError("optimization.target must be 'runtime' or 'memory' or 'integral'")
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """转换为字典（嵌套组件序列化，并处理 Path）"""
         data = asdict(self)
         # 处理嵌套 Path 字段
@@ -226,7 +227,7 @@ class PerfAgentConfig:
         return data
 
     @classmethod
-    def from_dict(cls, config_dict: Dict[str, Any]) -> "PerfAgentConfig":
+    def from_dict(cls, config_dict: dict[str, Any]) -> "PerfAgentConfig":
         """从字典创建配置（严格使用嵌套组件键，不再支持旧顶层键）"""
         cfg = config_dict.copy() if config_dict else {}
 
@@ -296,7 +297,7 @@ class PerfAgentConfig:
     @classmethod
     def from_yaml(cls, config_path: Path) -> "PerfAgentConfig":
         """从 YAML 文件加载配置（严格使用嵌套键）"""
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             config_data = yaml.safe_load(f) or {}
         return cls.from_dict(config_data)
 
@@ -308,6 +309,20 @@ class PerfAgentConfig:
 
     def _load_default_system_template(self) -> str:
         """加载默认系统模板"""
+        if self.optimization.code_generation_mode == "direct":
+            return """你是一个专业的代码性能优化专家。你的任务是分析给定的代码，识别性能瓶颈，并提供优化建议。
+
+你需要：
+1. 仔细分析当前代码的性能问题
+2. 考虑算法复杂度、数据结构选择、内存使用因素
+3. 提供具体的优化方案，直接输出优化后的完整代码
+4. 确保优化后的代码功能正确性不变
+5. 优先考虑时间复杂度的改进
+
+请始终保持代码的可读性和可维护性。
+
+请输出完整代码，包含在 Markdown 代码块中（例如 ```python ... ```）。
+"""
         return """你是一个专业的代码性能优化专家。你的任务是分析给定的代码，识别性能瓶颈，并提供优化建议。
 
 你需要：
@@ -329,6 +344,26 @@ class PerfAgentConfig:
 
     def _load_default_optimization_template(self) -> str:
         """加载默认优化模板"""
+        if self.optimization.code_generation_mode == "direct":
+            return """基于以下信息，请优化代码性能：
+
+当前代码：
+```{language}
+{current_code}
+```
+
+性能分析结果：
+{performance_analysis}
+
+历史优化记录：
+{optimization_history}
+
+请提供优化方案，格式要求：
+1. 简要说明优化思路（中文说明）
+2. 直接输出优化后的完整代码，使用 Markdown 代码块包裹。
+
+优化方案：
+"""
         return """基于以下信息，请优化代码性能：
 
 当前代码：
@@ -361,7 +396,7 @@ class PerfAgentConfig:
 """
 
 
-def load_config(config_path: Optional[Path] = None) -> PerfAgentConfig:
+def load_config(config_path: Path | None = None) -> PerfAgentConfig:
     """加载配置文件"""
     if config_path and Path(config_path).exists():
         return PerfAgentConfig.from_yaml(Path(config_path))
