@@ -762,26 +762,11 @@ def main():
                     sys_prompt_dir = Path(plan_iter_dir) / "system_prompt"
                     sys_prompt_dir.mkdir(parents=True, exist_ok=True)
 
-                    rendered_template = None
-                    try:
-                        base_cfg_path = step_config.get("perf_base_config")
-                        if base_cfg_path:
-                            with open(base_cfg_path, encoding="utf-8") as f:
-                                base_cfg_data = yaml.safe_load(f) or {}
-                            tmpl = (base_cfg_data.get("prompts", {}) or {}).get("system_template")
-                            if isinstance(tmpl, str) and tmpl:
-                                if local_memory_text:
-                                    rendered_template = tmpl.replace("{local_memory}", str(local_memory_text))
-                                else:
-                                    rendered_template = tmpl
-                    except Exception:
-                        rendered_template = None
-
                     for inst_name, req in per_inst_reqs.items():
                         try:
                             data = {"prompts": {"additional_requirements": str(req)}}
-                            if isinstance(rendered_template, str) and rendered_template:
-                                data["prompts"]["system_template"] = rendered_template
+                            if isinstance(local_memory_text, str) and local_memory_text.strip():
+                                data["prompts"]["local_memory"] = str(local_memory_text)
                             with open(sys_prompt_dir / f"{inst_name}.yaml", "w", encoding="utf-8") as f:
                                 yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
                         except Exception:
@@ -849,22 +834,7 @@ def main():
                     logger.info("Filter 算子执行完毕，跳过后续 PerfAgent 运行")
                     continue
 
-                rendered_template = None
-                try:
-                    base_cfg_path = step_config.get("perf_base_config")
-                    if base_cfg_path:
-                        with open(base_cfg_path, encoding="utf-8") as f:
-                            base_cfg_data = yaml.safe_load(f) or {}
-                        tmpl = (base_cfg_data.get("prompts", {}) or {}).get("system_template")
-                        if isinstance(tmpl, str) and tmpl:
-                            if local_memory_text:
-                                rendered_template = tmpl.replace("{local_memory}", str(local_memory_text))
-                            else:
-                                rendered_template = tmpl
-                except Exception:
-                    rendered_template = None
-
-                if isinstance(rendered_template, str) and rendered_template:
+                if isinstance(local_memory_text, str) and local_memory_text.strip():
                     try:
                         if instance_templates_dir:
                             p = Path(instance_templates_dir)
@@ -874,7 +844,7 @@ def main():
                                         with open(fp, encoding="utf-8") as f:
                                             d = yaml.safe_load(f) or {}
                                         pm = d.get("prompts") or {}
-                                        pm["system_template"] = rendered_template
+                                        pm["local_memory"] = str(local_memory_text)
                                         d["prompts"] = pm
                                         with open(fp, "w", encoding="utf-8") as f:
                                             yaml.safe_dump(d, f, allow_unicode=True, sort_keys=False)
@@ -887,12 +857,8 @@ def main():
                             for fp in inst_dir.glob("*.json"):
                                 try:
                                     with open(sys_prompt_dir / f"{fp.stem}.yaml", "w", encoding="utf-8") as f:
-                                        yaml.safe_dump(
-                                            {"prompts": {"system_template": rendered_template}},
-                                            f,
-                                            allow_unicode=True,
-                                            sort_keys=False,
-                                        )
+                                        data = {"prompts": {"local_memory": str(local_memory_text)}}
+                                        yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
                                 except Exception:
                                     pass
                             instance_templates_dir = str(sys_prompt_dir)

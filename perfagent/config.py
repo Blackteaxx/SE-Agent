@@ -71,6 +71,7 @@ class PromptConfig:
     # 实例系统模板附加内容目录（包含若干 YAML 文件）（兼容旧流程）
     instance_templates_dir: Optional[Path] = None
     include_all_history: bool = False
+    local_memory: Optional[str] = None
 
 
 @dataclass

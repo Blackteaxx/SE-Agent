@@ -893,6 +893,7 @@ class PerfAgent:
         """格式化系统提示词，填充语言/优化目标/任务描述/附加要求。"""
         tmpl = self.config.prompts.system_template
         additional = self.config.prompts.additional_requirements or ""
+        local_memory = getattr(self.config.prompts, "local_memory", None) or ""
         if tmpl:
             try:
                 return tmpl.format(
@@ -900,6 +901,7 @@ class PerfAgent:
                     optimization_target=optimization_target,
                     task_description=task_description,
                     additional_requirements=additional,
+                    local_memory=local_memory,
                 )
             except Exception:
                 return tmpl
@@ -907,7 +909,8 @@ class PerfAgent:
         return (
             f"你是一个专业的代码性能优化专家。目标是提升 {optimization_target}。\n"
             f"当前语言：{language}。任务描述：{task_description}\n\n"
-            f"附加要求：{additional}"
+            f"附加要求：{additional}\n\n"
+            f"本地记忆：{local_memory}"
         )
 
     def _build_metrics_and_artifacts(self, benchmark_results: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
