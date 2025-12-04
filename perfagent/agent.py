@@ -894,6 +894,8 @@ class PerfAgent:
         benchmark_results: dict[str, Any],
     ) -> str:
         """构建优化提示词，填充当前程序、评估指标与构件(section)。"""
+        if self.config.optimization.code_generation_mode == "direct":
+            return self.config.prompts.optimization_template
         # 构造 metrics 与 artifacts
         metrics_dict, artifacts_dict = self._build_metrics_and_artifacts(benchmark_results)
         # 以 Markdown 格式化，便于模型阅读

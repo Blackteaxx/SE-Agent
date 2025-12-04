@@ -517,7 +517,7 @@ def _process_and_summarize(
 
         if tra_stats and tra_stats.get("total_tra_files", 0) > 0:
             # 提取优化目标配置
-            perf_cfg_path = step_config.get("perf_base_config")
+            perf_cfg_path = step_config.get("perf_base_config") or se_config.get("base_config")
             opt_target, lang_val = _extract_optimization_info(perf_cfg_path)
 
             # 更新 summarizer 配置
@@ -724,7 +724,7 @@ def main():
             # 构建当前迭代的基础参数
             current_iter_dir = f"{output_dir}/iteration_{next_iteration_idx}"
             iter_params = {
-                "perf_base_config": step_config.get("perf_base_config"),
+                "perf_base_config": step_config.get("perf_base_config") or se_config.get("base_config"),
                 "operator": operator_name,
                 "model": se_config.get("model", {}),
                 "instances_dir": se_config.get("instances", {}).get("instances_dir", ""),
