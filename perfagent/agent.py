@@ -6,6 +6,7 @@ PerfAgent 核心类
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -590,33 +591,61 @@ class PerfAgent:
                     # 保守回退：LLM 未配置时返回空建议，避免引入无效 diff
                     optimization_response = "LLM 未配置或不可用，跳过本次优化建议。请检查 API 配置。"
 
-                # 提取 diff
-                diff_text = self._extract_diff_from_response(optimization_response)
+                # 提取代码变更
+                diff_text = None
+                optimized_code = None
 
-                if not diff_text:
-                    summary_text = self._build_summary_text(
-                        iteration=iteration + 1 + iter_offset,
-                        code_changed=False,
-                        diff_text=None,
-                        benchmark_results=None,
-                        current_program=current_code,
-                        error_message="无法从响应中提取有效的 diff",
-                    )
-                    trajectory.end_step(
-                        step_id,
-                        response=optimization_response,
-                        thought="未能提取有效的 SEARCH/REPLACE 区块",
-                        code_changed=False,
-                        diff=None,
-                        error="无法从响应中提取有效的 diff",
-                        code_snapshot=current_code,
-                        summary=summary_text,
-                    )
-                    continue
+                if self.config.optimization.code_generation_mode == "direct":
+                    optimized_code = self._extract_full_code_from_response(optimization_response)
+                    if not optimized_code:
+                        summary_text = self._build_summary_text(
+                            iteration=iteration + 1 + iter_offset,
+                            code_changed=False,
+                            diff_text=None,
+                            benchmark_results=None,
+                            current_program=current_code,
+                            error_message="无法从响应中提取有效的完整代码",
+                        )
+                        trajectory.end_step(
+                            step_id,
+                            response=optimization_response,
+                            thought="未能提取有效的完整代码区块",
+                            code_changed=False,
+                            diff=None,
+                            error="无法从响应中提取有效的完整代码",
+                            code_snapshot=current_code,
+                            summary=summary_text,
+                        )
+                        continue
+                else:
+                    # 提取 diff
+                    diff_text = self._extract_diff_from_response(optimization_response)
 
-                # 应用 diff
+                    if not diff_text:
+                        summary_text = self._build_summary_text(
+                            iteration=iteration + 1 + iter_offset,
+                            code_changed=False,
+                            diff_text=None,
+                            benchmark_results=None,
+                            current_program=current_code,
+                            error_message="无法从响应中提取有效的 diff",
+                        )
+                        trajectory.end_step(
+                            step_id,
+                            response=optimization_response,
+                            thought="未能提取有效的 SEARCH/REPLACE 区块",
+                            code_changed=False,
+                            diff=None,
+                            error="无法从响应中提取有效的 diff",
+                            code_snapshot=current_code,
+                            summary=summary_text,
+                        )
+                        continue
+
+                # 应用变更
                 try:
-                    optimized_code = self.diff_applier.apply_diff(current_code, diff_text)
+                    if self.config.optimization.code_generation_mode == "diff":
+                        optimized_code = self.diff_applier.apply_diff(current_code, diff_text)
 
                     # 如果代码未发生变化，仅结束该步骤并跳过迭代
                     if optimized_code == current_code:
@@ -1060,6 +1089,19 @@ class PerfAgent:
             "## Current Metrics\n" + metrics_md + "\n\n"
             "## Current Artifacts\n" + artifacts_md
         )
+
+    def _extract_full_code_from_response(self, response: str) -> str:
+        """从模型响应中提取完整代码（Markdown 代码块）。"""
+        if not response:
+            return ""
+        # 匹配 ```language ... ```
+        # 尝试匹配 python, cpp, java, etc. 或者不指定
+        pattern = r"```(?:\w+)?\n(.*?)```"
+        matches = re.findall(pattern, response, re.DOTALL)
+        if matches:
+            # 返回最后一个匹配的代码块，通常是最终代码
+            return matches[-1].strip()
+        return ""
 
     def _extract_diff_from_response(self, response: str) -> str:
         """从模型响应中提取 diff
