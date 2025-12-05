@@ -120,3 +120,4 @@ trajectories_perf/*
 instances/
 configs/*
 tmp/*
+programs/*
