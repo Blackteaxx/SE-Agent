@@ -11,6 +11,7 @@ import argparse
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -556,6 +557,9 @@ def _process_and_summarize(
         logger.error(f"迭代 {iter_idx} 后处理失败: {e}")
 
 
+# 已简化逻辑：未完成任务时直接清空输出目录并从头开始，不再逐迭代清理
+
+
 def _print_final_summary(se_config, timestamp, log_file, output_dir, traj_pool_manager, logger):
     """
     打印和记录最终执行摘要
@@ -652,7 +656,7 @@ def main():
         with open(args.config, encoding="utf-8") as f:
             se_config = yaml.safe_load(f)
 
-        # 2. 准备输出环境
+        # 2. 准备输出环境（支持不含占位符的路径以便续跑）
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = se_config["output_dir"].replace("{timestamp}", timestamp)
 
@@ -709,13 +713,26 @@ def main():
         )
         traj_pool_manager.initialize_pool()
 
-        # 4. 执行迭代策略
+        # 4. 执行迭代策略（仅检测是否完成；未完成则清理并重新跑）
         iterations = se_config.get("strategy", {}).get("iterations", [])
         logger.info(f"计划执行 {len(iterations)} 个迭代步骤")
+        # 如果 final.json 存在，认为任务已完成
+        if (Path(output_dir) / "final.json").exists():
+            print("🎉 检测到任务已完成，跳过执行")
+            logger.info("检测到任务已完成，直接结束")
+            _log_token_usage(output_dir, logger)
+            return
 
-        # 确定起始迭代编号
-        existing_iters = [int(p.name.split("_")[-1]) for p in Path(output_dir).glob("iteration_*") if p.is_dir()]
-        next_iteration_idx = (max(existing_iters) if existing_iters else 0) + 1
+        # 未完成：直接清空输出目录并从头开始
+        try:
+            if Path(output_dir).exists():
+                shutil.rmtree(output_dir)
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            logger.info("已清空输出目录，准备从头开始执行")
+        except Exception as e:
+            logger.warning(f"清空输出目录失败: {e}")
+
+        next_iteration_idx = 1
 
         for step_config in iterations:
             operator_name = step_config.get("operator")

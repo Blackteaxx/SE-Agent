@@ -68,7 +68,12 @@ def _prepare_temp_space(inst_files: list[Path], tmp_root: Path) -> dict[str, Pat
 
 
 def _write_per_instance_config(
-    base_cfg: dict, tmp_instance_dir: Path, instance_name: str, config_out_path: Path, timestamp: str
+    base_cfg: dict,
+    tmp_instance_dir: Path,
+    instance_name: str,
+    config_out_path: Path,
+    timestamp: str,
+    override_base_out: str | None = None,
 ) -> Path:
     """
     基于原始 SE 配置生成“单实例”配置：
@@ -82,8 +87,8 @@ def _write_per_instance_config(
     cfg["instances"] = instances
 
     orig_out = str(cfg.get("output_dir", "trajectories_perf/run_{timestamp}")).rstrip("/")
-    # 使用调用者传入的已生成 timestamp 替换占位符
-    final_base_out = orig_out.replace("{timestamp}", timestamp)
+    base_out = str(override_base_out) if override_base_out else orig_out
+    final_base_out = base_out.replace("{timestamp}", timestamp)
     cfg["output_dir"] = f"{final_base_out}/{instance_name}"
 
     config_out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -235,6 +240,7 @@ def main():
     parser.add_argument("--instances-dir", help="覆盖配置中的 instances_dir（可选）")
     parser.add_argument("--max-parallel", type=int, default=1, help="同时并发的实例数（全局并行度）")
     parser.add_argument("--mode", choices=["demo", "execute"], default="execute", help="perf_run.py 的运行模式")
+    parser.add_argument("--output-dir", help="覆盖配置中的 output_dir（可选，用于续跑或指定输出根目录）")
     parser.add_argument("--limit", type=int, help="仅处理前 N 个实例（快速试跑）")
     parser.add_argument("--dry-run", action="store_true", help="仅预览命令，不实际执行")
 
@@ -268,15 +274,29 @@ def main():
 
     mapping = _prepare_temp_space(inst_files, tmp_root)
 
-    # 生成 timestamp 并替换输出目录
+    # 生成 timestamp 并计算输出根目录（支持 CLI 覆盖）
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    base_root_dir = base_cfg["output_dir"].replace("{timestamp}", timestamp)
+    if args.output_dir:
+        # 如果传入的覆盖目录包含占位符，则替换；否则按原样使用
+        override_root = str(_ensure_abs(args.output_dir, project_root))
+        base_root_dir = override_root.replace("{timestamp}", timestamp)
+    else:
+        base_root_dir = base_cfg.get("output_dir", "trajectories_perf/run_{timestamp}").replace(
+            "{timestamp}", timestamp
+        )
 
     # 构建 per-instance 配置文件并运行
     per_instance_cfg_paths: dict[str, Path] = {}
     for name, tmp_inst_dir in mapping.items():
         cfg_out = tmp_inst_dir / "se_config.yaml"
-        per_instance_cfg_paths[name] = _write_per_instance_config(base_cfg, tmp_inst_dir, name, cfg_out, timestamp)
+        per_instance_cfg_paths[name] = _write_per_instance_config(
+            base_cfg,
+            tmp_inst_dir,
+            name,
+            cfg_out,
+            timestamp,
+            override_base_out=base_root_dir,
+        )
 
     # 并行执行（简单的批次调度：窗口大小 = max_parallel）
     names = list(per_instance_cfg_paths.keys())

@@ -514,6 +514,7 @@ You must output a single JSON object **strictly** adhering to this schema:
     }
   ]
 }
+```
 
 Notes:
 - If there is no meaningful strategy-level change, set "step_outcome": "Neutral" and both arrays to [].
@@ -719,6 +720,7 @@ You must output a single JSON object **strictly** adhering to this schema:
     }
   ]
 }
+```
 
 Notes:
 - If there is no meaningful strategy-level change, set "step_outcome": "Neutral" and both arrays to [].
@@ -1114,6 +1116,7 @@ Output a SINGLE JSON object with the following keys:
     }
 ]
 }
+```
 
 - If some list is empty, return an empty array ([]) for that list.
 - Return only the JSON object, with no extra commentary or backticks.
