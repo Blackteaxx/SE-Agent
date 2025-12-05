@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass
@@ -69,7 +69,7 @@ class InstancesConfig:
 @dataclass
 class LocalMemoryConfig:
     enabled: bool = True
-    format_mode: str = "short"
+    format_mode: Literal["full", "short"] = "short"
     extras: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
