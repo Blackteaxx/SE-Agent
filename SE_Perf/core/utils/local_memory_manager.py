@@ -168,7 +168,7 @@ class LocalMemoryManager:
     def _estimate_chars(self, memory: dict[str, Any]) -> int:
         """粗略估计记忆体量（按字符计）。"""
         try:
-            return len(json.dumps(memory, ensure_ascii=False))
+            return len(self.render_as_markdown(memory))
         except Exception:
             return 0
 

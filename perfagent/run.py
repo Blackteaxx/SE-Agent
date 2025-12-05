@@ -13,7 +13,7 @@ import math
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from .agent import EffiBenchXInstance, PerfAgent
 from .config import PerfAgentConfig, load_config
@@ -24,7 +24,7 @@ from .utils.log import get_se_logger
 
 def load_instance_data(instance_path: Path) -> EffiBenchXInstance:
     """加载实例数据为 EffiBenchXInstance dataclass"""
-    with open(instance_path, "r", encoding="utf-8") as f:
+    with open(instance_path, encoding="utf-8") as f:
         data = json.load(f)
     inst = EffiBenchXInstance.from_dict(data)
     # 使用文件名（不含扩展名）作为任务名
@@ -32,9 +32,7 @@ def load_instance_data(instance_path: Path) -> EffiBenchXInstance:
     return inst
 
 
-def run_single_instance(
-    config: PerfAgentConfig, instance_path: Path, base_dir: Optional[Path] = None
-) -> Dict[str, Any]:
+def run_single_instance(config: PerfAgentConfig, instance_path: Path, base_dir: Path | None = None) -> dict[str, Any]:
     """运行单个实例的优化"""
     # 初始绑定主日志器到 base_dir（或配置的 log_dir），后续在实例目录内绑定专属文件日志器
     try:
@@ -132,21 +130,44 @@ def run_single_instance(
         except Exception as e:
             logger.error(f"写出 .problem 失败: {e}")
 
-        # 从轨迹 submission 生成 <instance_dir>/<task_name>.pred
+        # 从轨迹 submission 生成 <instance_dir>/<task_name>.pred，并附加语言、优化目标与性能单位
         try:
             submission_code = ""
             traj_path = Path(result.get("trajectory_file", ""))
+            info = {}
             if traj_path.exists():
-                with open(traj_path, "r", encoding="utf-8") as tf:
+                with open(traj_path, encoding="utf-8") as tf:
                     traj_json = json.load(tf)
                 info = traj_json.get("info") or traj_json.get("metadata") or {}
-                # 优先使用轨迹中的最终最新提交代码；若缺失再回退
                 submission_code = (
                     info.get("final_best_code") or info.get("submission") or info.get("final_submission_code") or ""
                 )
+
+            lang = (
+                result.get("language")
+                or info.get("language")
+                or getattr(local_config.language_cfg, "language", None)
+                or "unknown"
+            )
+            opt_target = (
+                result.get("optimization_target")
+                or info.get("optimization_target")
+                or getattr(local_config.optimization, "target", None)
+                or "runtime"
+            )
+            unit = result.get("performance_unit") or (
+                "s" if opt_target == "runtime" else ("MB" if opt_target == "memory" else "MB*s")
+            )
+            comment_prefix = "#" if str(lang).lower() == "python3" else "//"
+            header = (
+                f"{comment_prefix} lang={lang}\n"
+                f"{comment_prefix} optimization_target={opt_target}\n"
+                f"{comment_prefix} performance_unit={unit}\n\n"
+            )
+
             pred_file = instance_output_dir / f"{task_name}.pred"
             with open(pred_file, "w", encoding="utf-8") as pf:
-                pf.write(submission_code or "")
+                pf.write(header + (submission_code or ""))
             logger.info(f"写出预测结果: {pred_file}")
         except Exception as e:
             logger.error(f"写出 .pred 失败: {e}")

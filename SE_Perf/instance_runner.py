@@ -18,6 +18,7 @@
 """
 
 import argparse
+import concurrent.futures
 import shutil
 import subprocess
 import sys
@@ -307,39 +308,34 @@ def main():
     failures = 0
     print(f"准备运行 {total} 个实例；并行度 = {max_parallel}；模式 = {args.mode}；dry_run = {args.dry_run}")
 
-    while i < total:
-        batch = names[i : i + max_parallel]
-        procs: list[tuple[str, subprocess.Popen]] = []
-        # 启动当前批次
-        for name in batch:
+    if args.dry_run:
+        for name in names:
             cfg_path = per_instance_cfg_paths[name]
             cmd = _build_perf_cmd(cfg_path, args.mode, project_root)
-            if args.dry_run:
-                print(f"[DRY-RUN] {name}: {' '.join(cmd)}")
-                successes += 1
-            else:
+            print(f"[DRY-RUN] {name}: {' '.join(cmd)}")
+            successes += 1
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as executor:
+            future_map: dict[concurrent.futures.Future, str] = {}
+            for name in names:
+                cfg_path = per_instance_cfg_paths[name]
+                cmd = _build_perf_cmd(cfg_path, args.mode, project_root)
+                fut = executor.submit(subprocess.run, cmd, cwd=str(project_root), text=True)
+                future_map[fut] = name
+            for fut in concurrent.futures.as_completed(future_map):
+                name = future_map[fut]
                 try:
-                    p = subprocess.Popen(
-                        cmd,
-                        cwd=str(project_root),
-                        text=True,
-                    )
+                    res = fut.result()
+                    rc = getattr(res, "returncode", None)
+                    if rc == 0:
+                        print(f"✅ 完成实例: {name}")
+                        successes += 1
+                    else:
+                        print(f"❌ 失败实例: {name}（返回码 {rc}）")
+                        failures += 1
                 except Exception as e:
-                    print(f"❌ 启动失败: {name}（{e}）")
+                    print(f"❌ 失败实例: {name}（异常 {e}）")
                     failures += 1
-                    continue
-                procs.append((name, p))
-        # 等待批次完成
-        if not args.dry_run:
-            for name, p in procs:
-                rc = p.wait()
-                if rc == 0:
-                    print(f"✅ 完成实例: {name}")
-                    successes += 1
-                else:
-                    print(f"❌ 失败实例: {name}（返回码 {rc}）")
-                    failures += 1
-        i += max_parallel
 
     print(f"运行结束：成功 {successes}/{total}；失败 {failures}")
 
