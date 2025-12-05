@@ -78,6 +78,7 @@ class LocalMemoryManager:
         memory_path: str | Path,
         llm_client: LLMClient | None = None,
         token_limit: int = 3000,
+        format_mode: str = "short",
     ) -> None:
         """
         初始化本地记忆管理器。
@@ -91,6 +92,15 @@ class LocalMemoryManager:
         self.llm_client = llm_client
         self.token_limit = int(token_limit)
         self.logger = get_se_logger("local_memory", emoji="🧠")
+        self.format_mode = str(format_mode or "short").lower()
+
+    def _entry_include_keys(self) -> set[str] | None:
+        try:
+            if str(self.format_mode).lower() == "full":
+                return None
+        except Exception:
+            pass
+        return {"code", "perf_metrics"}
 
     def initialize(self) -> None:
         """确保记忆库文件存在，若不存在则创建空结构。"""
@@ -353,7 +363,7 @@ You must output a single JSON object strictly adhering to this schema:
             try:
                 if TrajPoolManager and isinstance(entry, dict):
                     lbl = str(entry.get("label") or entry.get("solution_id") or "current")
-                    return TrajPoolManager.format_entry({lbl: entry}, include_keys={"code", "perf_metrics"})
+                    return TrajPoolManager.format_entry({lbl: entry}, include_keys=self._entry_include_keys())
             except Exception:
                 pass
             return "N/A"
@@ -560,7 +570,7 @@ Notes:
             try:
                 if TrajPoolManager and isinstance(entry, dict):
                     lbl = str(entry.get("label") or entry.get("solution_id") or "current")
-                    return TrajPoolManager.format_entry({lbl: entry}, include_keys={"code", "perf_metrics"})
+                    return TrajPoolManager.format_entry({lbl: entry}, include_keys=self._entry_include_keys())
             except Exception:
                 pass
             return "N/A"
@@ -765,7 +775,7 @@ Notes:
             try:
                 if TrajPoolManager and isinstance(entry, dict):
                     lbl = str(entry.get("label") or entry.get("solution_id") or "current")
-                    return TrajPoolManager.format_entry({lbl: entry}, include_keys={"code", "perf_metrics"})
+                    return TrajPoolManager.format_entry({lbl: entry}, include_keys=self._entry_include_keys())
             except Exception:
                 pass
             return "N/A"
@@ -800,7 +810,8 @@ Notes:
         """提取并解析 LLM 返回的 JSON 内容。"""
         content = (text or "").strip()
         if not content:
-            raise ValueError("空响应内容，无法解析为JSON")
+            msg = "空响应内容，无法解析为JSON"
+            raise ValueError(msg)
 
         # 尝试直接解析完整JSON
         if content.startswith("{"):
@@ -814,30 +825,37 @@ Notes:
             return json.loads(json_content)
 
         # 未找到可解析的JSON片段
-        raise ValueError("响应中未找到可解析的JSON内容")
+        msg = "响应中未找到可解析的JSON内容"
+        raise ValueError(msg)
 
     def _validate_memory_response(self, data: dict[str, Any]) -> None:
         if not isinstance(data, dict):
-            raise ValueError("响应数据必须为JSON对象")
+            msg = "响应数据必须为JSON对象"
+            raise ValueError(msg)
         # 仅支持数组形式返回
         if "new_direction_items" not in data:
-            raise ValueError("响应格式缺少键: new_direction_items")
+            msg = "响应格式缺少键: new_direction_items"
+            raise ValueError(msg)
         nd = data.get("new_direction_items")
         if nd is not None and not isinstance(nd, list):
-            raise ValueError("new_direction_items必须为列表")
+            msg = "new_direction_items必须为列表"
+            raise ValueError(msg)
         if isinstance(nd, list):
             for it in nd:
                 if not isinstance(it, dict):
-                    raise ValueError("new_direction_items的元素必须为对象")
+                    msg = "new_direction_items的元素必须为对象"
+                    raise ValueError(msg)
 
         if "new_memory_items" in data:
             nm = data.get("new_memory_items")
             if nm is not None and not isinstance(nm, list):
-                raise ValueError("new_memory_items必须为列表")
+                msg = "new_memory_items必须为列表"
+                raise ValueError(msg)
             if isinstance(nm, list):
                 for it in nm:
                     if not isinstance(it, dict):
-                        raise ValueError("new_memory_items的元素必须为对象")
+                        msg = "new_memory_items的元素必须为对象"
+                        raise ValueError(msg)
 
     def _normalize_extraction_response(self, resp: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """将LLM响应统一转换为列表形式。"""
@@ -1150,37 +1168,48 @@ Output ONLY the valid JSON object.
 
     def _validate_compress_response(self, data: dict[str, Any]) -> None:
         if not isinstance(data, dict):
-            raise ValueError("响应数据必须为JSON对象")
+            msg = "响应数据必须为JSON对象"
+            raise ValueError(msg)
         db = data.get("direction_board")
         if not isinstance(db, list):
-            raise ValueError("direction_board必须为列表")
+            msg = "direction_board必须为列表"
+            raise ValueError(msg)
         for item in db:
             if not isinstance(item, dict):
-                raise ValueError("direction_board项必须为对象")
+                msg = "direction_board项必须为对象"
+                raise ValueError(msg)
             for k in ("direction", "description", "status", "success_count", "failure_count", "evidence"):
                 if k not in item:
-                    raise ValueError(f"direction_board项缺少键: {k}")
+                    msg = f"direction_board项缺少键: {k}"
+                    raise ValueError(msg)
             ev = item.get("evidence")
             if not isinstance(ev, list):
-                raise ValueError("direction_board.evidence必须为列表")
+                msg = "direction_board.evidence必须为列表"
+                raise ValueError(msg)
             for e in ev:
                 if not isinstance(e, dict):
-                    raise ValueError("evidence项必须为对象")
+                    msg = "evidence项必须为对象"
+                    raise ValueError(msg)
         el = data.get("experience_library")
         if not isinstance(el, list):
-            raise ValueError("experience_library必须为列表")
+            msg = "experience_library必须为列表"
+            raise ValueError(msg)
         for item in el:
             if not isinstance(item, dict):
-                raise ValueError("experience_library项必须为对象")
+                msg = "experience_library项必须为对象"
+                raise ValueError(msg)
             for k in ("type", "title", "description", "content", "evidence"):
                 if k not in item:
-                    raise ValueError(f"experience_library项缺少键: {k}")
+                    msg = f"experience_library项缺少键: {k}"
+                    raise ValueError(msg)
             ev = item.get("evidence")
             if not isinstance(ev, list):
-                raise ValueError("experience_library.evidence必须为列表")
+                msg = "experience_library.evidence必须为列表"
+                raise ValueError(msg)
             for e in ev:
                 if not isinstance(e, dict):
-                    raise ValueError("evidence项必须为对象")
+                    msg = "evidence项必须为对象"
+                    raise ValueError(msg)
 
     def extract_and_update(
         self,

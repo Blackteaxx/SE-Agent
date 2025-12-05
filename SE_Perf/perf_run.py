@@ -31,6 +31,7 @@ from core.utils.traj_extractor import TrajExtractor
 from core.utils.traj_pool_manager import TrajPoolManager
 from core.utils.trajectory_processor import TrajectoryProcessor
 from operators import create_operator
+from perf_config import LocalMemoryConfig, PerfRunCLIConfig, SEPerfRunSEConfig
 
 # --- 辅助函数 ---
 
@@ -648,23 +649,25 @@ def main():
     parser.add_argument("--config", default="SE/configs/se_configs/dpsk.yaml", help="SE 配置文件路径")
     parser.add_argument("--mode", choices=["demo", "execute"], default="execute", help="运行模式")
     args = parser.parse_args()
+    cli = PerfRunCLIConfig(config=args.config, mode=args.mode)
 
     print("=== SE PerfAgent 多迭代执行 ===")
 
     try:
         # 1. 加载配置
-        with open(args.config, encoding="utf-8") as f:
-            se_config = yaml.safe_load(f)
+        with open(cli.config, encoding="utf-8") as f:
+            se_raw = yaml.safe_load(f) or {}
+        se_cfg = SEPerfRunSEConfig.from_dict(se_raw)
 
         # 2. 准备输出环境（支持不含占位符的路径以便续跑）
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = se_config["output_dir"].replace("{timestamp}", timestamp)
+        output_dir = se_cfg.output_dir.replace("{timestamp}", timestamp)
 
         # 初始化日志
         log_file = setup_se_logging(output_dir)
         logger = get_se_logger("perf_run", emoji="⚡")
 
-        logger.info(f"启动执行: {args.config}, 模式: {args.mode}")
+        logger.info(f"启动执行: {cli.config}, 模式: {cli.mode}")
         logger.info(f"输出目录: {output_dir}")
 
         # Token统计与LLM I/O日志文件路径
@@ -672,24 +675,28 @@ def main():
         os.environ["SE_LLM_IO_LOG_PATH"] = str(Path(output_dir) / "llm_io.jsonl")
 
         # 3. 初始化核心组件
-        traj_pool_path = os.path.join(output_dir, "traj.pool")
+        traj_pool_path = str(Path(output_dir) / "traj.pool")
 
         # LLM Client
         llm_client = None
         try:
             from core.utils.llm_client import LLMClient
 
-            llm_client = LLMClient.from_se_config(se_config, use_operator_model=True)
+            llm_client = LLMClient.from_se_config(se_cfg.to_dict(), use_operator_model=True)
         except Exception as e:
             logger.warning(f"LLM客户端初始化失败: {e}")
 
         # Local Memory Manager
         local_memory = None
-        memory_config = se_config.get("local_memory")
-        if isinstance(memory_config, dict) and memory_config.get("enabled", True):
+        memory_config = se_cfg.local_memory
+        if isinstance(memory_config, LocalMemoryConfig) and memory_config.enabled:
             try:
                 memory_path = Path(output_dir) / "memory.json"
-                local_memory = LocalMemoryManager(memory_path, llm_client=llm_client)
+                local_memory = LocalMemoryManager(
+                    memory_path,
+                    llm_client=llm_client,
+                    format_mode=memory_config.format_mode,
+                )
                 local_memory.initialize()
                 logger.info("LocalMemoryManager 已启用")
             except Exception as e:
@@ -707,14 +714,14 @@ def main():
         traj_pool_manager = TrajPoolManager(
             traj_pool_path,
             llm_client,
-            num_workers=se_config.get("num_workers"),
+            num_workers=se_cfg.num_workers,
             memory_manager=local_memory,
-            prompt_config=se_config.get("prompt_config"),
+            prompt_config=se_cfg.prompt_config,
         )
         traj_pool_manager.initialize_pool()
 
         # 4. 执行迭代策略（仅检测是否完成；未完成则清理并重新跑）
-        iterations = se_config.get("strategy", {}).get("iterations", [])
+        iterations = se_cfg.strategy.iterations
         logger.info(f"计划执行 {len(iterations)} 个迭代步骤")
         # 如果 final.json 存在，认为任务已完成
         if (Path(output_dir) / "final.json").exists():
@@ -741,13 +748,13 @@ def main():
             # 构建当前迭代的基础参数
             current_iter_dir = f"{output_dir}/iteration_{next_iteration_idx}"
             iter_params = {
-                "perf_base_config": step_config.get("perf_base_config") or se_config.get("base_config"),
+                "perf_base_config": step_config.get("perf_base_config") or se_cfg.base_config,
                 "operator": operator_name,
-                "model": se_config.get("model", {}),
-                "instances_dir": se_config.get("instances", {}).get("instances_dir", ""),
+                "model": se_cfg.model.to_dict(),
+                "instances_dir": se_cfg.instances.instances_dir,
                 "output_dir": current_iter_dir,
-                "max_iterations": se_config.get("max_iterations", 10),
-                "num_workers": se_config.get("num_workers", 1),
+                "max_iterations": se_cfg.max_iterations,
+                "num_workers": se_cfg.num_workers,
             }
 
             try:
@@ -766,7 +773,7 @@ def main():
                     "num": step_config.get("num"),
                     "trajectory_labels": step_config.get("trajectory_labels"),
                 }
-                op_result = _execute_operator_step(plan_step, se_config, traj_pool_manager, output_dir, logger)
+                op_result = _execute_operator_step(plan_step, se_cfg.to_dict(), traj_pool_manager, output_dir, logger)
 
                 plans = op_result.get("plans") or []
                 for plan in plans:
@@ -794,17 +801,18 @@ def main():
                     iter_params["operator_params"] = {"instance_templates_dir": str(sys_prompt_dir)}
 
                     print(f"\n=== 迭代 {next_iteration_idx} (Plan: {plan_label}) ===")
+                    os.environ["SE_ITERATION_INDEX"] = str(next_iteration_idx)
 
                     # 执行 PerfAgent
-                    run_result = call_perfagent(iter_params, logger, dry_run=(args.mode == "demo"))
+                    run_result = call_perfagent(iter_params, logger, dry_run=(cli.mode == "demo"))
 
                     # 后处理：生成轨迹
-                    if run_result.get("status") == "success" and args.mode == "execute":
+                    if run_result.get("status") == "success" and cli.mode == "execute":
                         _process_and_summarize(
                             Path(plan_iter_dir),
                             next_iteration_idx,
                             step_config,
-                            se_config,
+                            se_cfg.to_dict(),
                             traj_pool_manager,
                             logger,
                             label_prefix=plan_label,
@@ -839,7 +847,7 @@ def main():
                 }
 
                 op_result = _execute_operator_step(
-                    op_step_config, se_config, traj_pool_manager, current_iter_dir, logger
+                    op_step_config, se_cfg.to_dict(), traj_pool_manager, current_iter_dir, logger
                 )
 
                 initial_code_dir = op_result.get("initial_code_dir")
@@ -890,12 +898,13 @@ def main():
                 iter_params["operator_params"]["instance_templates_dir"] = instance_templates_dir
 
             print(f"\n=== 迭代 {next_iteration_idx} ===")
+            os.environ["SE_ITERATION_INDEX"] = str(next_iteration_idx)
 
             # 执行 PerfAgent
-            run_result = call_perfagent(iter_params, logger, dry_run=(args.mode == "demo"))
+            run_result = call_perfagent(iter_params, logger, dry_run=(cli.mode == "demo"))
 
             # 后处理
-            if run_result.get("status") == "success" and args.mode == "execute":
+            if run_result.get("status") == "success" and cli.mode == "execute":
                 # 确定源标签用于记录
                 src_labels_for_summary = []
                 if isinstance(step_config.get("source_trajectories"), list):
@@ -905,7 +914,7 @@ def main():
                     Path(current_iter_dir),
                     next_iteration_idx,
                     step_config,
-                    se_config,
+                    se_cfg.to_dict(),
                     traj_pool_manager,
                     logger,
                     label_prefix=step_config.get("trajectory_label"),
@@ -917,7 +926,7 @@ def main():
             next_iteration_idx += 1
 
         # 5. 最终汇总
-        _print_final_summary(se_config, timestamp, log_file, output_dir, traj_pool_manager, logger)
+        _print_final_summary(se_cfg.to_dict(), timestamp, log_file, output_dir, traj_pool_manager, logger)
 
     except Exception as e:
         if "logger" in locals():

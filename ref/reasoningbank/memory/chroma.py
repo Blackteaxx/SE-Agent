@@ -1,8 +1,9 @@
 """ChromaDB memory backend."""
 
-import chromadb
-from typing import List, Dict
 import uuid
+
+import chromadb
+
 from .base import MemoryBackend
 
 
@@ -23,11 +24,9 @@ class ChromaMemoryBackend(MemoryBackend):
             collection_name (str): The name of the ChromaDB collection to use.
         """
         self.client = chromadb.Client()
-        self.collection = self.client.get_or_create_collection(
-            name=collection_name
-        )
+        self.collection = self.client.get_or_create_collection(name=collection_name)
 
-    def add(self, items: List[Dict]):
+    def add(self, items: list[dict]):
         """
         Adds a list of memory items to the ChromaDB collection.
 
@@ -46,7 +45,7 @@ class ChromaMemoryBackend(MemoryBackend):
             documents=[item["document"] for item in items],
         )
 
-    def query(self, query_embedding: List[float], k: int) -> List[Dict]:
+    def query(self, query_embedding: list[float], k: int) -> list[dict]:
         """
         Queries the ChromaDB collection for the k most similar items.
 
@@ -58,9 +57,7 @@ class ChromaMemoryBackend(MemoryBackend):
             List[Dict]: A list of metadata dictionaries for the k most similar
             items.
         """
-        results = self.collection.query(
-            query_embeddings=[query_embedding], n_results=k
-        )
+        results = self.collection.query(query_embeddings=[query_embedding], n_results=k)
         # The query returns a list of lists for metadatas, one for each query
         # embedding. Since we only pass one embedding, we take the first list
         # of results.

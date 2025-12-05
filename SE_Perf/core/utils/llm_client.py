@@ -136,6 +136,12 @@ class LLMClient:
                                     len(str(m.get("content", ""))) for m in messages if isinstance(m, dict)
                                 ),
                             }
+                            iter_env = os.getenv("SE_ITERATION_INDEX")
+                            if iter_env is not None:
+                                try:
+                                    entry["iteration_index"] = int(iter_env)
+                                except Exception:
+                                    entry["iteration_index"] = iter_env
                             with self._token_lock:
                                 with open(self.token_log_path, "a", encoding="utf-8") as f:
                                     f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -154,6 +160,12 @@ class LLMClient:
                             "messages": messages,
                             "response": content,
                         }
+                        iter_env = os.getenv("SE_ITERATION_INDEX")
+                        if iter_env is not None:
+                            try:
+                                io_entry["iteration_index"] = int(iter_env)
+                            except Exception:
+                                io_entry["iteration_index"] = iter_env
                         if getattr(response, "usage", None):
                             io_entry["usage"] = {
                                 "prompt_tokens": getattr(response.usage, "prompt_tokens", None),
