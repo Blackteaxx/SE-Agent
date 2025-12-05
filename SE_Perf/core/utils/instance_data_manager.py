@@ -30,6 +30,11 @@ class InstanceData:
         self.final_performance: float | str | None = None
         self.final_artifacts: str | None = None
 
+        # 运行元数据
+        self.language: str | None = None
+        self.optimization_target: str | None = None
+        self.performance_unit: str | None = None
+
         # 元数据
         self.available_files: list[str] = []
         self.data_sources: dict[str, str] = {}
@@ -236,7 +241,7 @@ class InstanceDataManager:
         if not result_file.exists():
             return
         try:
-            with open(result_file, "r", encoding="utf-8") as f:
+            with open(result_file, encoding="utf-8") as f:
                 data = json.load(f)
         except Exception:
             return
@@ -247,8 +252,16 @@ class InstanceDataManager:
         instance_data.final_performance = perf
         instance_data.final_artifacts = artifacts if isinstance(artifacts, str) else None
 
+        lang = data.get("language")
+        opt = data.get("optimization_target")
+        unit = data.get("performance_unit")
+        instance_data.language = lang if isinstance(lang, str) else None
+        instance_data.optimization_target = opt if isinstance(opt, str) else None
+        instance_data.performance_unit = unit if isinstance(unit, str) else None
+
         try:
             import math
+
             if isinstance(perf, (int, float)):
                 instance_data.passed = math.isfinite(float(perf))
             elif isinstance(perf, str):

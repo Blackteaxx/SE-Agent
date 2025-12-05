@@ -176,6 +176,51 @@
         .splitter-horizontal:hover, .splitter-vertical:hover {
             background-color: var(--secondary-color);
         }
+        .tabs {
+            display: flex;
+            border-bottom: 1px solid #ddd;
+            background-color: #f1f1f1;
+        }
+
+        .tab-button {
+            background-color: inherit;
+            border: none;
+            outline: none;
+            cursor: pointer;
+            padding: 10px 16px;
+            transition: 0.3s;
+            font-size: 14px;
+            font-weight: 600;
+            color: #555;
+            border-bottom: 3px solid transparent;
+        }
+
+        .tab-button:hover {
+            background-color: #ddd;
+        }
+
+        .tab-button.active {
+            border-bottom: 3px solid var(--secondary-color);
+            color: var(--secondary-color);
+            background-color: white;
+        }
+
+        .tab-content {
+            display: none;
+            padding: 20px;
+            animation: fadeEffect 0.5s;
+            overflow-y: auto;
+            height: calc(100% - 45px); /* Subtract tab header height */
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        @keyframes fadeEffect {
+            from {opacity: 0;}
+            to {opacity: 1;}
+        }
     </style>
 </head>
 <body>
@@ -195,14 +240,64 @@
         </div>
         <div class="splitter-horizontal" id="splitter-horiz"></div>
         <div id="right-panel">
-            <div id="node-details">
-                <h2>Node Details</h2>
-                <p>Click on a node to view details here.</p>
+            <!-- Tab Header -->
+            <div class="tabs">
+                <button class="tab-button active" onclick="openTab(event, 'tab-problem')">Problem</button>
+                <button class="tab-button" onclick="openTab(event, 'tab-details')">Details</button>
+                <button class="tab-button" onclick="openTab(event, 'tab-llm')">LLM IO</button>
+                <button class="tab-button" onclick="openTab(event, 'tab-code')">Code</button>
+                <button class="tab-button" onclick="openTab(event, 'tab-full')">Full Data</button>
+            </div>
+
+            <!-- Tab Contents -->
+            <div id="tab-problem" class="tab-content active">
+                <div id="problem-content">
+                    <p class="placeholder">Select an instance to view problem description.</p>
+                </div>
+            </div>
+
+            <div id="tab-details" class="tab-content">
+                <div id="details-content">
+                    <h2>Node Details</h2>
+                    <p>Click on a node to view details here.</p>
+                </div>
+            </div>
+
+            <div id="tab-llm" class="tab-content">
+                <div id="llm-content">
+                    <p class="placeholder">Select a node with iteration info to view LLM interactions.</p>
+                </div>
+            </div>
+
+            <div id="tab-code" class="tab-content">
+                <div id="code-content">
+                    <p class="placeholder">Select a node to view code.</p>
+                </div>
+            </div>
+
+            <div id="tab-full" class="tab-content">
+                <div id="full-content">
+                    <p class="placeholder">Select a node to view full data JSON.</p>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
+        function openTab(evt, tabName) {
+            var i, tabcontent, tablinks;
+            tabcontent = document.getElementsByClassName("tab-content");
+            for (i = 0; i < tabcontent.length; i++) {
+                tabcontent[i].className = tabcontent[i].className.replace(" active", "");
+            }
+            tablinks = document.getElementsByClassName("tab-button");
+            for (i = 0; i < tablinks.length; i++) {
+                tablinks[i].className = tablinks[i].className.replace(" active", "");
+            }
+            document.getElementById(tabName).className += " active";
+            evt.currentTarget.className += " active";
+        }
+
         document.addEventListener('DOMContentLoaded', function() {
             // Splitter Logic
             const container = document.getElementById('container');
@@ -281,12 +376,15 @@
             let cy = null;
             let chart = null;
             let rawData = null;
+            let currentInstanceKey = null;
 
             // Initialize Chart.js
             const ctx = document.getElementById('performanceChart').getContext('2d');
 
             // Fetch data
-            fetch('/api/data')
+            const urlParams = new URLSearchParams(window.location.search);
+            const root = urlParams.get('root');
+            fetch('/api/data' + (root ? ('?root=' + encodeURIComponent(root)) : ''))
                 .then(response => {
                     console.log('Fetch response status:', response.status);
                     return response.json();
@@ -348,6 +446,7 @@
                     console.error('No data found for instance:', instanceKey);
                     return;
                 }
+                currentInstanceKey = instanceKey;
 
                 try {
                     renderGraph(instanceData);
@@ -365,14 +464,12 @@
             }
 
             function displayProblemDescription(desc) {
-                const container = document.getElementById('node-details');
+                const container = document.getElementById('problem-content');
                 container.innerHTML = `
                     <div class="info-section" style="background-color: #f8f9fa; border-left: 4px solid #2c3e50; padding: 15px; margin-bottom: 25px; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
                         <h3 style="margin-top: 0; border-bottom: 1px solid #e9ecef; padding-bottom: 10px; margin-bottom: 15px; color: #2c3e50;">Problem Description</h3>
-                        <div style="max-height: 400px; overflow-y: auto; font-family: 'Segoe UI', sans-serif; line-height: 1.6; color: #333; white-space: pre-wrap; font-size: 14px;">${desc}</div>
+                        <div style="font-family: 'Segoe UI', sans-serif; line-height: 1.6; color: #333; white-space: pre-wrap; font-size: 14px;">${desc}</div>
                     </div>
-                    <h2>Node Details</h2>
-                    <p id="default-msg">Click on a node to view details here.</p>
                 `;
             }
 
@@ -388,10 +485,10 @@
                 const iterations = new Set();
 
                 Object.keys(instanceData).forEach(key => {
-                    if (key === 'problem') return;
+                    if (key === 'problem' || key === 'llm_io') return;
                     const solution = instanceData[key];
                     if (typeof solution !== 'object') return;
-                    
+
                     solutions.push({ key, solution });
                     
                     // Create node logic
@@ -592,22 +689,9 @@
             }
 
             function displayNodeDetails(info) {
-                // We don't want to overwrite the problem description
-                // So we should append or replace only the node details part
-                // Or easier: just re-render everything in the right panel properly
-                // But wait, we should keep problem description at the top?
-                
-                const container = document.getElementById('node-details');
-                
-                // Check if problem description exists, save it
-                let problemHtml = '';
-                const existingProblem = container.querySelector('.info-section h3');
-                if (existingProblem && existingProblem.textContent === 'Problem Description') {
-                    problemHtml = container.querySelector('.info-section').outerHTML;
-                }
-                
-                let html = problemHtml; // Start with problem description
-                html += `<h2>${info.label || 'Node Details'}</h2>`;
+                // 1. DETAILS TAB
+                const detailsContainer = document.getElementById('details-content');
+                let html = `<h2>${info.label || 'Node Details'}</h2>`;
                 
                 // Helper to recursively display object
                 function formatValue(val) {
@@ -636,14 +720,6 @@
                         html += `<div><span class="info-label">Approach:</span> <p>${info.summary.approach_summary}</p></div>`;
                     }
 
-                    // Improved Summary Display
-                    // We want to show the entire summary object nicely formatted if needed, 
-                    // or at least specific fields like slot_view if they exist.
-                    // For now, let's just format the whole summary object excluding what we already showed.
-                    // Actually, the user asked to "display summary on the right side, nicely formatted".
-                    // Let's create a collapsible or scrollable pre block for the full summary JSON
-                    // or a better structured view.
-                    
                     html += `<div style="margin-top: 10px;">
                         <h4 style="margin: 5px 0; color: #555;">Full Summary Details</h4>
                         <pre style="max-height: 300px; overflow: auto; font-size: 12px;">${JSON.stringify(info.summary, null, 2)}</pre>
@@ -651,13 +727,11 @@
 
                     html += `</div>`;
                 }
-
-                // 2. Extract last assistant message from trajectory_raw
+                
+                // Last Assistant Message in Details
                 if (info.trajectory_raw && info.trajectory_raw.Trajectory) {
                     const traj = info.trajectory_raw.Trajectory;
                     let lastAssistantMsg = null;
-                    
-                    // Iterate backwards to find the last assistant message
                     for (let i = traj.length - 1; i >= 0; i--) {
                         if (traj[i].role === 'assistant') {
                             lastAssistantMsg = traj[i].content;
@@ -672,16 +746,77 @@
                         </div>`;
                     }
                 }
+                detailsContainer.innerHTML = html;
 
 
+                // 2. LLM IO TAB
+                const llmContainer = document.getElementById('llm-content');
+                let llmHtml = '';
+                let iter = info.iteration;
+                if (iter === undefined && info.label && /^iter(\d+)_/.test(info.label)) {
+                    try {
+                        iter = parseInt(info.label.match(/^iter(\d+)_/)[1]);
+                    } catch (e) {
+                        iter = undefined;
+                    }
+                }
+                if (currentInstanceKey && iter !== undefined) {
+                    try {
+                        const llm = rawData[currentInstanceKey]?.llm_io;
+                        const entries = llm && llm.by_iteration && llm.by_iteration[String(iter)] || [];
+                        if (entries.length > 0) {
+                            llmHtml += `<div class="info-section"><h3>LLM IO (Iteration ${iter})</h3>`;
+                            entries.forEach((e, idx) => {
+                                const meta = `${e.context || ''} · ${e.model || ''} · ${e.ts || ''}`;
+                                llmHtml += `<div style="margin:8px 0; padding:10px; border:1px solid #eee; border-radius:6px; background:#fafafa;">`;
+                                llmHtml += `<div class="badge" style="background:#3498db;">${idx + 1}</div> <span style="margin-left:8px; color:#666;">${meta}</span>`;
+                                if (Array.isArray(e.messages)) {
+                                    llmHtml += `<div style="margin-top:8px; max-height:400px; overflow:auto;">`;
+                                    e.messages.forEach(m => {
+                                        const role = m.role || 'unknown';
+                                        const content = (m.content || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                                        llmHtml += `<div style="margin-bottom:6px;"><span class="badge" style="background:#7f8c8d;">${role}</span>`;
+                                        llmHtml += `<div style="white-space: pre-wrap; font-family: 'Consolas','Monaco', monospace; font-size: 12px; background:#f4f6f7; padding:8px; border-radius:4px; border-left:3px solid #bdc3c7;">${content}</div></div>`;
+                                    });
+                                    llmHtml += `</div>`;
+                                }
+                                llmHtml += `</div>`;
+                            });
+                            llmHtml += `</div>`;
+                        } else {
+                             llmHtml = '<p class="placeholder">No LLM IO found for this iteration.</p>';
+                        }
+                    } catch (e) {
+                        console.error('Failed to render LLM IO:', e);
+                        llmHtml = `<p class="placeholder">Error loading LLM IO: ${e.message}</p>`;
+                    }
+                } else {
+                    llmHtml = '<p class="placeholder">No iteration info found for this node.</p>';
+                }
+                llmContainer.innerHTML = llmHtml;
+
+
+                // 3. CODE TAB
+                const codeContainer = document.getElementById('code-content');
                 if (info.code) {
-                     html += `<div class="info-section"><h3>Code</h3><pre>${info.code}</pre></div>`;
+                     codeContainer.innerHTML = `<div class="info-section"><h3>Code</h3><pre>${info.code}</pre></div>`;
+                } else {
+                     codeContainer.innerHTML = '<p class="placeholder">No code available for this node.</p>';
                 }
 
-                // Generic dump of other fields
-                html += `<div class="info-section"><h3>Full Data</h3><pre>${JSON.stringify(info, null, 2)}</pre></div>`;
+                // 4. FULL DATA TAB
+                const fullContainer = document.getElementById('full-content');
+                fullContainer.innerHTML = `<div class="info-section"><h3>Full Data</h3><pre>${JSON.stringify(info, null, 2)}</pre></div>`;
 
-                container.innerHTML = html;
+                // Switch to Details tab by default when clicking a node
+                // Or keep current tab? Let's keep current tab if active, otherwise default to Details.
+                // Actually, 'Details' seems like a good default for node clicks unless user is exploring code.
+                // Let's check if any tab is active.
+                const activeTab = document.querySelector('.tab-content.active');
+                if (!activeTab || activeTab.id === 'tab-problem') {
+                     // If problem tab is active, switch to details
+                     document.querySelector('.tab-button[onclick*="tab-details"]').click();
+                }
             }
 
             function renderChart(instanceData) {

@@ -61,7 +61,8 @@ dependencies = [
     "tabulate",
     "textual>=1.0.0",
     "scipy",
-    "sortedcontainers"
+    "sortedcontainers",
+    "chromadb",
 ]
 
 [project.scripts]

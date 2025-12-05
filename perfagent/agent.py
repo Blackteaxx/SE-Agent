@@ -862,6 +862,11 @@ class PerfAgent:
                 "success": bool(best_performance < initial_trimmed),
             }
 
+            unit = "s" if target == "runtime" else ("MB" if target == "memory" else "MB*s")
+            final_result["language"] = language
+            final_result["optimization_target"] = target
+            final_result["performance_unit"] = unit
+
             try:
                 md_metrics, md_artifacts = self._build_metrics_and_artifacts(current_benchmark_results)
                 final_result["final_artifacts"] = self._format_artifacts_md(md_artifacts)
@@ -871,7 +876,11 @@ class PerfAgent:
             # 记录最终轨迹
             trajectory_file = trajectory.finalize(
                 success=final_result["success"],
-                final_performance={"target": self.config.optimization.target, "trimmed_mean": best_performance},
+                final_performance={
+                    "target": self.config.optimization.target,
+                    "trimmed_mean": best_performance,
+                    "unit": unit,
+                },
                 final_submission_code=latest_optimized_code,
             )
 

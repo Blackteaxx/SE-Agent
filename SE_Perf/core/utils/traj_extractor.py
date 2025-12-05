@@ -87,6 +87,9 @@ class TrajExtractor:
                     perf_metrics = {
                         "passed": instance.passed,
                         "performance": instance.final_performance,
+                        "performance_unit": instance.performance_unit,
+                        "optimization_target": instance.optimization_target,
+                        "language": instance.language,
                         "artifacts": instance.final_artifacts,
                     }
                     results.append(

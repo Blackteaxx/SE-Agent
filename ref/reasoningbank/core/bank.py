@@ -1,13 +1,16 @@
 """Core components for the ReasoningBank library."""
+
 import json
-from typing import Any, List, Dict
+from typing import Any
+
+from langchain_community.llms import FakeListLLM
+from sentence_transformers import SentenceTransformer
+
+from ..distillation.distill import distill_trajectory, judge_trajectory
 from ..memory.base import MemoryBackend
-from ..distillation.distill import judge_trajectory, distill_trajectory
-from ..utils.config import load_config
 from ..memory.chroma import ChromaMemoryBackend
 from ..memory.json import JSONMemoryBackend
-from sentence_transformers import SentenceTransformer
-from langchain_community.llms import FakeListLLM
+from ..utils.config import load_config
 
 # Placeholder for a generic Embedding Model interface.
 # The user would provide a model with an `embed_documents` method.
@@ -49,13 +52,9 @@ class ReasoningBank:
         """Initializes the memory backend based on the configuration."""
         backend_type = self.config["memory"]["backend"]
         if backend_type == "chroma":
-            return ChromaMemoryBackend(
-                collection_name=self.config["memory"]["chroma"]["collection_name"]
-            )
+            return ChromaMemoryBackend(collection_name=self.config["memory"]["chroma"]["collection_name"])
         elif backend_type == "json":
-            return JSONMemoryBackend(
-                filepath=self.config["memory"]["json"]["filepath"]
-            )
+            return JSONMemoryBackend(filepath=self.config["memory"]["json"]["filepath"])
         else:
             raise ValueError(f"Unknown memory backend type: {backend_type}")
 
@@ -69,9 +68,7 @@ class ReasoningBank:
             # This is a mock for testing purposes.
             return SentenceTransformer("all-MiniLM-L6-v2")
         elif model_name == "sentence-transformers":
-            st_model_name = self.config["embedding_model"].get(
-                "st_model_name", "all-MiniLM-L6-v2"
-            )
+            st_model_name = self.config["embedding_model"].get("st_model_name", "all-MiniLM-L6-v2")
             return SentenceTransformer(st_model_name)
         else:
             raise ValueError(f"Unknown embedding model: {model_name}")
@@ -119,9 +116,7 @@ class ReasoningBank:
                 to solve.
         """
         is_success = judge_trajectory(trajectory, query, self.llm)
-        distilled_items = distill_trajectory(
-            trajectory, query, self.llm, is_success
-        )
+        distilled_items = distill_trajectory(trajectory, query, self.llm, is_success)
 
         if not distilled_items:
             return
@@ -144,7 +139,7 @@ class ReasoningBank:
 
         self.memory_backend.add([experience_to_add])
 
-    def retrieve_memories(self, query: str, k: int = 1) -> List[Dict]:
+    def retrieve_memories(self, query: str, k: int = 1) -> list[dict]:
         """
         Retrieves the top k most relevant memories for a given query.
 
