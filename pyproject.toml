@@ -62,7 +62,7 @@ dependencies = [
     "textual>=1.0.0",
     "scipy",
     "sortedcontainers",
-    "chromadb"
+    "chromadb",
 ]
 
 [project.scripts]

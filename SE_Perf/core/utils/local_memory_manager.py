@@ -1098,42 +1098,42 @@ Your tasks:
 Output a SINGLE JSON object with the following keys:
 
 ```json
-{
+{{
             "thought_process": "Briefly explain how you compressed and merged the memory (max 2 sentences).",
 "direction_board": [
-    {
+    {{
                 "direction": "Concise, unique strategy name.",
     "description": "1–3 sentences explaining what the strategy does and when to apply it.",
     "status": "Success | Failed | Neutral | Untried",
     "success_count": 0,
     "failure_count": 0,
     "evidence": [
-        {
+        {{
                     "solution_id": "...",
         "code_change": "...",
         "metrics_delta": "...",
         "context": "..."
-        }
+        }}
     ]
-    }
+    }}
 ],
 "experience_library": [
-    {
+    {{
                 "type": "Success | Failure | Neutral",
     "title": "Concise experience title.",
     "description": "One-sentence summary of the lesson.",
     "content": "2–6 bullet points or short paragraphs giving details.",
     "evidence": [
-        {
+        {{
                     "solution_id": "...",
         "code_change": "...",
         "metrics_delta": "...",
         "context": "..."
-        }
+        }}
     ]
-    }
+    }}
 ]
-}
+}}
 ```
 
 - If some list is empty, return an empty array ([]) for that list.
