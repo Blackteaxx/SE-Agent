@@ -16,24 +16,6 @@ class GlobalMemoryBank:
             if not config_path:
                 raise ValueError("config_path is required when config is not provided")
             config = load_config(config_path)
-        if not isinstance(config, GlobalMemoryConfig):
-            cfg_dict = dict(config or {})
-            from .utils.config import ChromaBackendConfig, MemoryConfig, OpenAIEmbeddingConfig
-
-            em = OpenAIEmbeddingConfig(
-                provider=str((cfg_dict.get("embedding_model") or {}).get("provider", "openai")),
-                api_base=(cfg_dict.get("embedding_model") or {}).get("api_base")
-                or (cfg_dict.get("embedding_model") or {}).get("base_url"),
-                api_key=(cfg_dict.get("embedding_model") or {}).get("api_key"),
-                model=(cfg_dict.get("embedding_model") or {}).get("model"),
-                request_timeout=(cfg_dict.get("embedding_model") or {}).get("request_timeout"),
-            )
-            m_raw = cfg_dict.get("memory") or {}
-            chroma = ChromaBackendConfig(
-                collection_name=str((m_raw.get("chroma") or {}).get("collection_name", "global_memory"))
-            )
-            mem = MemoryConfig(backend=str(m_raw.get("backend", "chroma")), chroma=chroma)
-            config = GlobalMemoryConfig(embedding_model=em, memory=mem)
         self.config: GlobalMemoryConfig = config
         self.memory_backend = self._init_memory_backend()
         self.embedding_model = self._init_embedding_model()
@@ -65,6 +47,6 @@ class GlobalMemoryBank:
         item = {"embedding": embedding, "metadata": dict(metadata or {}), "document": experience}
         self.memory_backend.add([item])
 
-    def retrieve_memories(self, query: str, k: int = 1) -> list[dict[str, Any]]:
+    def retrieve_memories(self, query: str, k: int = 1) -> dict[str, list]:
         query_embedding = self.embedding_model.encode(query)
         return self.memory_backend.query(query_embedding, k)

@@ -73,6 +73,7 @@ class PromptConfig:
     instance_templates_dir: Path | None = None
     include_all_history: bool = False
     local_memory: str | None = None
+    global_memory: str | None = None
 
 
 @dataclass

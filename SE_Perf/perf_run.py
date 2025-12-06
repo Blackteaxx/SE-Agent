@@ -501,6 +501,93 @@ def call_perfagent(iteration_params: dict[str, Any], logger, dry_run: bool = Fal
 # --- 辅助函数 ---
 
 
+def _inject_global_memory(
+    instance_reqs: dict,  # {inst_name: additional_reqs}
+    global_memory: GlobalMemoryManager,
+    local_memory_text: str | None,
+    sys_prompt_dir: Path,
+    base_config_path: str | None,
+    se_config: dict,
+    logger,
+):
+    """
+    为每个实例检索 Global Memory，并写入到 system prompt yaml 文件中。
+    """
+    if not global_memory:
+        return
+
+    logger.info("开始检索 Global Memory...")
+
+    # 尝试从 base_config 读取默认配置
+    default_lang = "python3"
+    default_target = "runtime"
+
+    if base_config_path:
+        try:
+            with open(base_config_path, encoding="utf-8") as f:
+                bc = yaml.safe_load(f) or {}
+                default_lang = bc.get("language_cfg", {}).get("language", default_lang)
+                default_target = bc.get("optimization", {}).get("target", default_target)
+        except Exception:
+            pass
+
+    # 加载实例描述（如果需要更精准的检索）
+    instances_dir = Path(se_config.get("instances", {}).get("instances_dir", ""))
+    instances_map = {}
+    if instances_dir.exists():
+        for fp in instances_dir.glob("*.json"):
+            try:
+                with open(fp, encoding="utf-8") as f:
+                    idata = json.load(f)
+                    # 优先匹配 task_name, id
+                    key = idata.get("task_name") or idata.get("id")
+                    if key:
+                        desc = idata.get("description_md") or idata.get("description") or ""
+                        instances_map[str(key)] = desc
+            except Exception:
+                pass
+
+    for inst_name in instance_reqs.keys():  # instance_reqs key 是实例名
+        try:
+            req_text = instance_reqs[inst_name]
+            desc = instances_map.get(str(inst_name), "")
+
+            # 构造上下文用于生成 Query
+            context = {
+                "language": default_lang,
+                "optimization_target": default_target,
+                "problem_description": desc,
+                "additional_requirements": req_text,
+                "local_memory": local_memory_text or "",
+            }
+
+            # 1. 生成 Query
+            queries = global_memory.generate_queries(context)
+            if not queries:
+                continue
+
+            # 2. 检索
+            mem_content = global_memory.retrieve(queries)
+            if not mem_content:
+                continue
+
+            # 3. 写入 YAML
+            yaml_path = sys_prompt_dir / f"{inst_name}.yaml"
+            data = {}
+            if yaml_path.exists():
+                with open(yaml_path, encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+
+            pm = data.setdefault("prompts", {})
+            pm["global_memory"] = mem_content
+
+            with open(yaml_path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+
+        except Exception as e:
+            logger.warning(f"实例 {inst_name} Global Memory 注入失败: {e}")
+
+
 def _process_and_summarize(
     iter_dir: Path,
     iter_idx: int,
@@ -809,6 +896,17 @@ def main():
                         except Exception:
                             pass
 
+                    # 注入 Global Memory (分支 A: Plan)
+                    _inject_global_memory(
+                        instance_reqs=per_inst_reqs,
+                        global_memory=global_memory,
+                        local_memory_text=local_memory_text,
+                        sys_prompt_dir=sys_prompt_dir,
+                        base_config_path=step_config.get("perf_base_config") or se_cfg.base_config,
+                        se_config=se_cfg.to_dict(),
+                        logger=logger,
+                    )
+
                     # 更新迭代参数
                     iter_params["output_dir"] = plan_iter_dir
                     iter_params["operator_params"] = {"instance_templates_dir": str(sys_prompt_dir)}
@@ -902,6 +1000,55 @@ def main():
                             instance_templates_dir = str(sys_prompt_dir)
                     except Exception:
                         pass
+
+                # 注入 Global Memory (分支 B: 普通算子)
+                # 即使没有 local_memory_text，也可能需要 global_memory
+                # 需要构造 instance_reqs，如果没有现成的 yaml，可以尝试从 instance_templates_dir 读取
+                # 或者遍历 instances_dir
+
+                try:
+                    target_sys_prompt_dir = None
+                    if instance_templates_dir:
+                        target_sys_prompt_dir = Path(instance_templates_dir)
+                    else:
+                        # 如果还没创建目录，就创建
+                        target_sys_prompt_dir = Path(current_iter_dir) / "system_prompt"
+                        target_sys_prompt_dir.mkdir(parents=True, exist_ok=True)
+                        instance_templates_dir = str(target_sys_prompt_dir)  # 确保回填
+
+                    # 收集当前所有的实例名和 reqs
+                    # 如果有现成的 yaml，读取 reqs；否则 reqs 为空
+                    inst_reqs_map = {}
+
+                    # 1. 尝试从 instance_templates_dir 读取现有 yaml
+                    if target_sys_prompt_dir and target_sys_prompt_dir.exists():
+                        for fp in target_sys_prompt_dir.glob("*.yaml"):
+                            try:
+                                with open(fp, encoding="utf-8") as f:
+                                    d = yaml.safe_load(f) or {}
+                                    req = d.get("prompts", {}).get("additional_requirements", "")
+                                    inst_reqs_map[fp.stem] = req
+                            except Exception:
+                                pass
+
+                    # 2. 如果 map 为空（即还没有 yaml 文件），则遍历 instances_dir 初始化 key
+                    if not inst_reqs_map:
+                        inst_dir = Path(iter_params.get("instances_dir") or "")
+                        if inst_dir.exists():
+                            for fp in inst_dir.glob("*.json"):
+                                inst_reqs_map[fp.stem] = ""  # 默认为空
+
+                    _inject_global_memory(
+                        instance_reqs=inst_reqs_map,
+                        global_memory=global_memory,
+                        local_memory_text=local_memory_text,
+                        sys_prompt_dir=target_sys_prompt_dir,
+                        base_config_path=step_config.get("perf_base_config") or se_cfg.base_config,
+                        se_config=se_cfg.to_dict(),
+                        logger=logger,
+                    )
+                except Exception as e:
+                    logger.warning(f"Global Memory 注入流程异常: {e}")
 
             # 设置算子输出参数
             iter_params["operator_params"] = {}

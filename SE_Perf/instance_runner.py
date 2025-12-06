@@ -22,6 +22,8 @@ import concurrent.futures
 import shutil
 import subprocess
 import sys
+import signal
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -91,6 +93,20 @@ def _write_per_instance_config(
     base_out = str(override_base_out) if override_base_out else orig_out
     final_base_out = base_out.replace("{timestamp}", timestamp)
     cfg["output_dir"] = f"{final_base_out}/{instance_name}"
+
+    # 如果配置了 Global Memory 且 backend 为 chroma，且未显式指定 persist_path
+    # 则自动将 persist_path 设置为 {cfg["output_dir"]}/global_memory
+    # 这样每个实例的 ChromaDB 就会存储在各自的输出目录下，避免并发写入冲突
+    global_memory_bank = cfg.get("global_memory_bank")
+    if isinstance(global_memory_bank, dict) and global_memory_bank.get("enabled"):
+        memory = global_memory_bank.get("memory", {})
+        if memory.get("backend") == "chroma":
+            chroma_cfg = memory.get("chroma", {})
+            # 强制覆盖 persist_path 为实例输出目录下的 global_memory
+            chroma_cfg["persist_path"] = f"{final_base_out}/global_memory"
+            memory["chroma"] = chroma_cfg
+            global_memory_bank["memory"] = memory
+            cfg["global_memory_bank"] = global_memory_bank
 
     config_out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(config_out_path, "w", encoding="utf-8") as f:
@@ -308,6 +324,62 @@ def main():
     failures = 0
     print(f"准备运行 {total} 个实例；并行度 = {max_parallel}；模式 = {args.mode}；dry_run = {args.dry_run}")
 
+    # 准备一个全局列表来跟踪正在运行的子进程
+    active_processes: list[subprocess.Popen] = []
+    active_processes_lock = threading.Lock()
+
+    def _cleanup_processes():
+        """终止所有活跃的子进程。"""
+        with active_processes_lock:
+            if not active_processes:
+                return
+            print(f"\n正在终止 {len(active_processes)} 个活跃子进程...")
+            for p in active_processes:
+                try:
+                    if p.poll() is None:  # 仅终止还在运行的进程
+                        p.terminate()
+                except Exception:
+                    pass
+            # 等待一小段时间让进程优雅退出
+            try:
+                for p in active_processes:
+                    try:
+                        p.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        p.kill()  # 强制杀死
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+    def _signal_handler(sig, frame):
+        """处理终止信号。"""
+        print(f"\n接收到信号 {sig}，准备退出...")
+        _cleanup_processes()
+        sys.exit(1)
+
+    # 注册信号处理
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
+
+    # 包装 subprocess.run 以便跟踪 Popen 对象
+    def _run_process(cmd, cwd):
+        try:
+            # 使用 Popen 替代 subprocess.run 以便获取句柄
+            with subprocess.Popen(cmd, cwd=cwd, text=True) as proc:
+                with active_processes_lock:
+                    active_processes.append(proc)
+
+                try:
+                    proc.wait()
+                    return subprocess.CompletedProcess(proc.args, proc.returncode)
+                finally:
+                    with active_processes_lock:
+                        if proc in active_processes:
+                            active_processes.remove(proc)
+        except Exception as e:
+            raise e
+
     if args.dry_run:
         for name in names:
             cfg_path = per_instance_cfg_paths[name]
@@ -320,7 +392,8 @@ def main():
             for name in names:
                 cfg_path = per_instance_cfg_paths[name]
                 cmd = _build_perf_cmd(cfg_path, args.mode, project_root)
-                fut = executor.submit(subprocess.run, cmd, cwd=str(project_root), text=True)
+                # 改为调用 _run_process
+                fut = executor.submit(_run_process, cmd, cwd=str(project_root))
                 future_map[fut] = name
             for fut in concurrent.futures.as_completed(future_map):
                 name = future_map[fut]

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import copy
 import json
 import math
 from typing import Any
@@ -83,7 +84,12 @@ class GlobalMemoryManager:
             pool_data = traj_pool_manager.load_pool()
             steps = traj_pool_manager.extract_steps()
 
-            instance_name = pool_data.keys()[0]
+            # Fix: Convert dict_keys to list before indexing
+            keys_list = list(pool_data.keys())
+            if not keys_list:
+                return 0
+            instance_name = keys_list[0]
+
             problem_description = pool_data[instance_name]["problem"]
             improvements = [s for s in steps if isinstance(s.get("pct"), (int, float)) and s.get("pct") > 0]
             regressions = [s for s in steps if isinstance(s.get("pct"), (int, float)) and s.get("pct") < 0]
@@ -168,11 +174,18 @@ class GlobalMemoryManager:
                     for item in items_to_add:
                         try:
                             doc = self._render_experience_markdown(item, instance_name)
-                            meta = {
-                                "type": item.get("type"),
-                                "title": item.get("title"),
-                                "instance_name": instance_name,
-                            }
+                            meta = copy.deepcopy(item)
+                            # 扁平化处理 evidence 列表
+                            evidence_list = meta.pop("evidence", [])
+                            if evidence_list and isinstance(evidence_list, list):
+                                meta["evidence_json"] = json.dumps(evidence_list, ensure_ascii=False)
+
+                            # 扁平化处理 content 列表
+                            content_list = meta.pop("content", [])
+                            if content_list and isinstance(content_list, list):
+                                meta["content_json"] = json.dumps(content_list, ensure_ascii=False)
+
+                            meta["instance_name"] = instance_name
                             self.bank.add_experience(doc, meta)
                             added += 1
                         except Exception:
@@ -184,13 +197,69 @@ class GlobalMemoryManager:
             self.logger.warning(f"全局记忆更新失败: {e}")
             return 0
 
-    def retrieve(self, query: str, k: int = 3) -> list[dict[str, Any]]:
+    def retrieve(self, queries: list[str], k: int = 3) -> str:
+        """根据查询检索相关经验，并格式化返回。
+
+        Args:
+            queries (list[str]): 查询列表
+            k (int, optional): 每个查询检索的数量. Defaults to 3.
+
+        Returns:
+            str: 格式化后的检索结果字符串
+        """
         try:
             if self.bank is None:
-                return []
-            return self.bank.retrieve_memories(query, k=k)
-        except Exception:
-            return []
+                return ""
+
+            all_results: list[dict[str, Any]] = []
+            seen_ids = set()
+
+            for query in queries:
+                # 检索
+                try:
+                    # retrieve_memories 返回 dict: {"documents": [[doc1, ...]], "metadatas": [[meta1, ...]], "ids": [[id1, ...]], "distances": [[dist1, ...]]}
+                    ret = self.bank.retrieve_memories(query, k=k)
+
+                    if not ret or not ret.get("documents") or not ret.get("ids"):
+                        continue
+
+                    documents = ret.get("documents", [[]])[0]
+                    metadatas = ret.get("metadatas", [[]])[0]
+                    ids = ret.get("ids", [[]])[0]
+
+                    for i, doc_id in enumerate(ids):
+                        if doc_id in seen_ids:
+                            continue
+                        seen_ids.add(doc_id)
+
+                        doc_content = documents[i] if i < len(documents) else ""
+                        meta = metadatas[i] if i < len(metadatas) else {}
+
+                        all_results.append({"content": doc_content, "metadata": meta, "id": doc_id})
+
+                except Exception as e:
+                    self.logger.warning(f"Query检索失败 '{query}': {e}")
+                    continue
+
+            # 如果没有检索到结果，返回空字符串
+            if not all_results:
+                return ""
+
+            # 格式化输出
+            lines = []
+            for i, item in enumerate(all_results, 1):
+                content = item["content"]
+                # 尝试解析 metadata 中的信息用于增强展示
+                meta = item.get("metadata", {})
+
+                lines.append(content.strip())
+                lines.append("")
+
+            return "\n".join(lines)
+
+        except Exception as e:
+            self.logger.warning(f"全局记忆检索流程异常: {e}")
+            return ""
 
     def _format_step_context(self, s: dict[str, Any]) -> str:
         try:
@@ -456,3 +525,156 @@ Return ONLY the JSON object. Do not add any explanations outside of JSON.
                 if isinstance(c, str) and c.strip():
                     lines.append(f"- {c}")
         return "\n".join(lines)
+
+    def generate_queries(self, context: dict[str, Any]) -> list[str]:
+        """根据上下文生成查询
+
+        Args:
+            context (dict[str, Any]): 上下文信息，包含以下键:
+                - "language": 目标语言 (例如 "Python")
+                - "optimization_target": 优化目标 (例如 "性能")
+                - "problem_description": 问题描述 (例如 "实现一个简单的排序算法")
+                - "additional_requirements": 额外需求 (例如 "必须使用原地排序")
+                - "local_memory": 本地内存中的相关信息 (可选)
+
+        Returns:
+            list[str]: 生成的查询字符串列表
+        """
+        language = str(context.get("language") or "").strip()
+        optimization_target = str(context.get("optimization_target") or "").strip()
+        problem_description = str(context.get("problem_description") or "").strip()
+        additional_requirements = str(context.get("additional_requirements") or "").strip()
+        local_memory = str(context.get("local_memory") or "").strip()
+
+        system_prompt, user_prompt = self._build_query_prompt(
+            language=language,
+            optimization_target=optimization_target,
+            problem_description=problem_description,
+            additional_requirements=additional_requirements,
+            local_memory=local_memory,
+        )
+
+        queries = []
+        try:
+            if self.llm_client is None:
+                return ""
+            last_error: str | None = None
+            for attempt in range(1, 4):
+                try:
+                    resp_text = self.llm_client.call_with_system_prompt(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        temperature=0.7,
+                        max_tokens=20000,
+                        usage_context="global_memory.generate_query",
+                    )
+                    try:
+                        resp_text = self.llm_client.clean_think_tags(resp_text)
+                    except Exception:
+                        pass
+                    parsed = self._parse_llm_json(resp_text)
+                    self._valid_query_response(parsed)
+
+                    if isinstance(parsed, dict):
+                        qs = parsed.get("queries") or []
+                        if isinstance(qs, list):
+                            queries = [str(q) for q in qs if isinstance(q, str) and q.strip()]
+
+                    if queries:
+                        self.logger.info(f"LLM查询生成成功 (第{attempt}次)")
+                        break
+                except ValueError as e:
+                    last_error = "invalid_response_format"
+                    self.logger.warning(f"LLM查询生成解析失败: 响应格式错误或无有效JSON片段 (第{attempt}次): {e}")
+                except Exception as e:
+                    last_error = "llm_call_failed"
+                    self.logger.warning(f"LLM查询生成调用失败 (第{attempt}次): {e}")
+
+            if last_error:
+                self.logger.error(f"LLM查询生成最终失败: {last_error}")
+
+            return queries
+
+        except Exception:
+            return ""
+
+    def _build_query_prompt(
+        self,
+        language: str,
+        optimization_target: str,
+        problem_description: str,
+        additional_requirements: str,
+        local_memory: str,
+    ) -> tuple[str, str]:
+        """根据上下文构建用于生成 Global Memory 检索查询的提示词"""
+
+        system_prompt = """
+You are an assistant that designs search queries for a global memory of past algorithm optimization experiences.
+
+Your job:
+- Read the given context (problem, constraints, language, optimization target, additional requirements, local memory).
+- Briefly think about what may be hard or bottleneck-prone in this task.
+- Output:
+1) A short explanation of your reasoning.
+2) 2–3 concrete queries to search for useful experiences.
+
+Notes:
+- The optimization target can be runtime, memory, or an integral score. Do not focus only on time complexity.
+- Queries should be short natural-language descriptions of a scenario + a problem, e.g.:
+- "In Python, how to handle fast IO when reading hundreds of thousands of integers"
+- "For counting pairs in an array with N up to 2e5, how to avoid O(N^2) nested loops"
+- "How to reduce memory usage for DP when the table is O(N^2) and N is 5000"
+- Write queries in English. Do not use internal IDs, file names, or variable names.
+- It is OK if queries mention language, input scale, data structure, and the optimization goal.
+
+Output format (STRICT):
+Return a single JSON object:
+
+{
+"thought_process": "<1–3 short paragraphs explaining what you think the key issues/bottlenecks are and why you chose these queries>",
+"queries": [
+    "<query 1>",
+    "<query 2>",
+    "<optional query 3>"
+]
+}
+
+No markdown, no extra keys, ensure valid JSON.
+    """.strip()
+
+        parts: list[str] = ["## Current Context"]
+
+        if problem_description.strip():
+            parts.append("### Problem Description")
+            parts.append(problem_description.strip())
+
+        if optimization_target.strip():
+            parts.append("### Optimization Target")
+            parts.append(optimization_target.strip())
+
+        if language.strip():
+            parts.append("### Target Language")
+            parts.append(language.strip())
+
+        if additional_requirements.strip():
+            parts.append("### Additional Requirements")
+            parts.append(additional_requirements.strip())
+
+        if local_memory.strip():
+            parts.append("### Local Memory")
+            parts.append(local_memory.strip())
+
+        user_prompt = "\n\n".join(parts).strip()
+
+        return system_prompt, user_prompt
+
+    def _valid_query_response(self, data: dict[str, Any]) -> bool:
+        """验证 Global Memory 检索查询响应是否符合预期格式"""
+        if not isinstance(data, dict):
+            msg = "响应数据必须为JSON对象"
+            raise ValueError(msg)
+        queries = data.get("queries")
+        if not isinstance(queries, list):
+            msg = "queries必须为列表"
+            raise ValueError(msg)
+        return True

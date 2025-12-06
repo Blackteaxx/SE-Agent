@@ -28,9 +28,18 @@ class ChromaMemoryBackend(MemoryBackend):
             documents=[item["document"] for item in items],
         )
 
-    def query(self, query_embedding: list[float], k: int) -> list[dict]:
+    def query(self, query_embedding: list[float], k: int) -> dict[str, list]:
         results = self.collection.query(query_embeddings=[query_embedding], n_results=k)
-        return results["metadatas"][0] if results.get("metadatas") else []
+
+        _ids = results["ids"][0] if results.get("ids") else []
+        metadatas = results["metadatas"][0] if results.get("metadatas") else []
+        documents = results["documents"][0] if results.get("documents") else []
+
+        return {
+            "ids": _ids,
+            "metadatas": metadatas,
+            "documents": documents,
+        }
 
     def reset(self) -> None:
         try:
