@@ -46,7 +46,7 @@
             font-size: 1.1em;
         }
 
-        #instance-select {
+        select {
             padding: 8px 12px;
             border-radius: 4px;
             border: none;
@@ -54,6 +54,7 @@
             min-width: 300px;
             background-color: white;
             color: var(--text-color);
+            margin-right: 20px;
         }
 
         #container {
@@ -225,9 +226,14 @@
 </head>
 <body>
     <div id="header">
+        <label for="dir-select">Select Experiment:</label>
+        <select id="dir-select">
+            <option value="">Loading directories...</option>
+        </select>
+
         <label for="instance-select">Select Instance:</label>
         <select id="instance-select">
-            <option value="">Loading...</option>
+            <option value="">Loading instances...</option>
         </select>
     </div>
     <div id="container">
@@ -381,17 +387,124 @@
             // Initialize Chart.js
             const ctx = document.getElementById('performanceChart').getContext('2d');
 
-            // Fetch data
-            const urlParams = new URLSearchParams(window.location.search);
-            const root = urlParams.get('root');
-            fetch('/api/data' + (root ? ('?root=' + encodeURIComponent(root)) : ''))
-                .then(response => {
-                    console.log('Fetch response status:', response.status);
-                    return response.json();
-                })
-                .then(data => {
-                    console.log('Data received:', data);
-                    
+            // Function to fetch and populate directories
+            function fetchDirectories() {
+                fetch('/api/dirs')
+                    .then(response => response.json())
+                    .then(dirs => {
+                        const dirSelect = document.getElementById('dir-select');
+                        dirSelect.innerHTML = '';
+                        
+                        if (dirs.length === 0) {
+                            const option = document.createElement('option');
+                            option.text = "No directories found";
+                            dirSelect.add(option);
+                            return;
+                        }
+
+                        // Add a placeholder or select first?
+                        // Let's select first for convenience, but trigger instance loading
+                        dirs.forEach(dir => {
+                            const option = document.createElement('option');
+                            option.value = dir;
+                            option.text = dir;
+                            dirSelect.add(option);
+                        });
+
+                        if (dirs.length > 0) {
+                            fetchInstances(dirs[0]);
+                        }
+
+                        // Add change event listener
+                        dirSelect.addEventListener('change', function() {
+                            fetchInstances(this.value);
+                        });
+                    })
+                    .catch(err => {
+                        console.error("Error loading directories:", err);
+                        document.getElementById('dir-select').innerHTML = '<option>Error loading</option>';
+                    });
+            }
+
+            // Function to fetch instances for a directory
+            function fetchInstances(subdir) {
+                const instanceSelect = document.getElementById('instance-select');
+                instanceSelect.innerHTML = '<option>Loading instances...</option>';
+                
+                // Clear previous data
+                if (cy) { cy.destroy(); cy = null; }
+                if (chart) { chart.destroy(); chart = null; }
+                document.getElementById('cy').innerHTML = '';
+                document.getElementById('problem-content').innerHTML = '<p class="placeholder">Select an instance to view problem description.</p>';
+                
+                fetch('/api/instances?subdir=' + encodeURIComponent(subdir))
+                    .then(response => response.json())
+                    .then(instances => {
+                        instanceSelect.innerHTML = '';
+                        if (instances.length === 0) {
+                            instanceSelect.innerHTML = '<option value="">No instances found</option>';
+                            return;
+                        }
+                        
+                        // Add placeholder
+                        const placeholder = document.createElement('option');
+                        placeholder.value = "";
+                        placeholder.text = "-- Select an Instance --";
+                        placeholder.disabled = true;
+                        placeholder.selected = true;
+                        instanceSelect.add(placeholder);
+
+                        instances.forEach(inst => {
+                            const option = document.createElement('option');
+                            option.value = inst;
+                            option.text = inst;
+                            instanceSelect.add(option);
+                        });
+                        
+                        // Remove old event listener to avoid duplicates? 
+                        // Actually we are adding a new listener every time fetchInstances is called? 
+                        // No, we should add listener once globally or handle it carefully.
+                        // Better to add listener once in init, and just use current values.
+                    })
+                    .catch(err => {
+                        console.error("Error loading instances:", err);
+                        instanceSelect.innerHTML = '<option>Error loading instances</option>';
+                    });
+            }
+
+            // Global listener for instance change
+            document.getElementById('instance-select').addEventListener('change', function() {
+                const subdir = document.getElementById('dir-select').value;
+                const instance = this.value;
+                if (subdir && instance) {
+                    loadInstanceData(subdir, instance);
+                }
+            });
+
+            // Function to load data for a specific instance
+            function loadInstanceData(subdir, instance) {
+                // Show loading state?
+                // document.getElementById('cy').innerHTML = 'Loading graph...';
+                
+                fetch('/api/data?subdir=' + encodeURIComponent(subdir) + '&instance=' + encodeURIComponent(instance))
+                    .then(response => {
+                        console.log('Fetch response status:', response.status);
+                        return response.json();
+                    })
+                    .then(data => {
+                        console.log('Data received:', data);
+                        processData(data);
+                    })
+                    .catch(error => {
+                        console.error('Error loading data:', error);
+                        // Show error in UI
+                    });
+            }
+
+            // Initial fetch
+            fetchDirectories();
+
+            function processData(data) {
                     // Register dagre extension
                     if (typeof cytoscapeDagre !== 'undefined') {
                         cytoscape.use(cytoscapeDagre);
@@ -401,13 +514,21 @@
                     }
 
                     rawData = data;
-                    populateInstanceSelect(data);
-                })
-                .catch(error => {
-                    console.error('Error fetching data:', error);
-                    document.getElementById('node-details').innerHTML = `<h2>Error</h2><p>${error.message}</p>`;
-                });
+                    // populateInstanceSelect(data); // No longer needed as we select instance first
+                    
+                    // We need to render the instance directly since we loaded only ONE instance data
+                    // The data structure is { "instance_name": { ... } }
+                    const keys = Object.keys(data);
+                    if (keys.length > 0) {
+                        const instanceKey = keys[0];
+                        renderInstance(instanceKey);
+                    }
+            }
 
+            // function populateInstanceSelect(data) { ... } // Can be removed or ignored
+
+
+            /*
             function populateInstanceSelect(data) {
                 console.log('Populating select with keys:', Object.keys(data));
                 const select = document.getElementById('instance-select');
@@ -438,6 +559,7 @@
                     renderInstance(this.value);
                 });
             }
+            */
 
             function renderInstance(instanceKey) {
                 console.log('Rendering instance:', instanceKey);
@@ -760,10 +882,32 @@
                         iter = undefined;
                     }
                 }
+                
+                // Check if we have loaded llm_io data in info itself (from _load_single_instance)
+                // info is the object for the specific solution node. 
+                // But llm_io is usually at the top level of the instance data (rawData[currentInstanceKey].llm_io)
+                // However, info is just one entry in the rawData[currentInstanceKey] object (e.g. 'iter1_...').
+                
+                // Let's check rawData structure again.
+                // rawData = { "instance_name": { "iter0_sol1": {...}, "iter1_sol1": {...}, "llm_io": {...}, "problem": "..." } }
+                
                 if (currentInstanceKey && iter !== undefined) {
                     try {
-                        const llm = rawData[currentInstanceKey]?.llm_io;
+                        // We access rawData[currentInstanceKey] because rawData is the whole response from /api/data
+                        // which is { "instance_name": { ... } }
+                        const instanceData = rawData[currentInstanceKey];
+                        
+                        // Debug
+                        console.log('Looking for LLM IO in:', instanceData);
+                        if (instanceData && instanceData.llm_io) {
+                             console.log('Found llm_io object:', instanceData.llm_io);
+                        } else {
+                             console.warn('llm_io not found in instanceData');
+                        }
+                        
+                        const llm = instanceData?.llm_io;
                         const entries = llm && llm.by_iteration && llm.by_iteration[String(iter)] || [];
+                        
                         if (entries.length > 0) {
                             llmHtml += `<div class="info-section"><h3>LLM IO (Iteration ${iter})</h3>`;
                             entries.forEach((e, idx) => {
@@ -778,6 +922,14 @@
                                         llmHtml += `<div style="margin-bottom:6px;"><span class="badge" style="background:#7f8c8d;">${role}</span>`;
                                         llmHtml += `<div style="white-space: pre-wrap; font-family: 'Consolas','Monaco', monospace; font-size: 12px; background:#f4f6f7; padding:8px; border-radius:4px; border-left:3px solid #bdc3c7;">${content}</div></div>`;
                                     });
+                                    
+                                    // Display Response if available
+                                    if (e.response) {
+                                        const responseContent = (e.response || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                                        llmHtml += `<div style="margin-bottom:6px;"><span class="badge" style="background:#2ecc71;">response</span>`;
+                                        llmHtml += `<div style="white-space: pre-wrap; font-family: 'Consolas','Monaco', monospace; font-size: 12px; background:#e8f8f5; padding:8px; border-radius:4px; border-left:3px solid #2ecc71;">${responseContent}</div></div>`;
+                                    }
+
                                     llmHtml += `</div>`;
                                 }
                                 llmHtml += `</div>`;
@@ -888,7 +1040,8 @@
                         x: sortedIters[0],
                         y: currentBest,
                         label: currentBestLabel,
-                        isTurningPoint: true
+                        isTurningPoint: true,
+                        improvement: null // First point has no improvement
                     });
 
                     for (let i = 1; i < sortedIters.length; i++) {
@@ -897,13 +1050,18 @@
                         
                         if (iterBest.y < currentBest) {
                             // Improvement found
+                            // Calculate relative improvement: (old - new) / old * 100
+                            const improvement = ((currentBest - iterBest.y) / currentBest) * 100;
+                            
                             currentBest = iterBest.y;
                             currentBestLabel = iterBest.label;
+                            
                             bestLineData.push({
                                 x: iter,
                                 y: currentBest,
                                 label: currentBestLabel,
-                                isTurningPoint: true
+                                isTurningPoint: true,
+                                improvement: improvement
                             });
                         } else {
                             // No improvement.
@@ -985,7 +1143,11 @@
                                     },
                                     padding: 6,
                                     formatter: function(value, context) {
-                                        return value.label;
+                                        let label = value.label;
+                                        if (value.improvement !== null && value.improvement !== undefined) {
+                                            label += `\n(↓${value.improvement.toFixed(1)}%)`;
+                                        }
+                                        return label;
                                     },
                                     display: function(context) {
                                         return context.dataset.data[context.dataIndex].isTurningPoint;
