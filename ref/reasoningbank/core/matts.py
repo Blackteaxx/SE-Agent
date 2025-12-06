@@ -1,15 +1,14 @@
 from typing import Any
+
+from .agent import create_agent_executor, format_memories_for_prompt
 from .bank import ReasoningBank
-from .agent import format_memories_for_prompt, create_agent_executor
 
 # A placeholder for a generic agent execution function.
 # In a real implementation, this would be a proper agent class or function.
 AgentExecutor = Any
 
 
-def parallel_scaling(
-    query: str, k: int, reasoning_bank: ReasoningBank, agent_executor: AgentExecutor
-) -> str:
+def parallel_scaling(query: str, k: int, reasoning_bank: ReasoningBank, agent_executor: AgentExecutor) -> str:
     """
     Implements parallel scaling MaTTS.
     Generates k trajectories in parallel, learns from them, and synthesizes a
@@ -23,9 +22,7 @@ def parallel_scaling(
     # In a real implementation, this could be done with asyncio or threading.
     trajectories = []
     for _ in range(k):
-        trajectory = agent_executor.invoke(
-            {"memories": formatted_memories, "query": query}
-        )
+        trajectory = agent_executor.invoke({"memories": formatted_memories, "query": query})
         trajectories.append(trajectory)
 
     # 3. Add the new experiences to the ReasoningBank to learn from them.
@@ -47,9 +44,7 @@ def parallel_scaling(
     return final_answer
 
 
-def sequential_scaling(
-    query: str, k: int, reasoning_bank: ReasoningBank, agent_executor: AgentExecutor
-) -> str:
+def sequential_scaling(query: str, k: int, reasoning_bank: ReasoningBank, agent_executor: AgentExecutor) -> str:
     """
     Implements sequential scaling MaTTS.
     Iteratively refines a single trajectory k times.
@@ -80,9 +75,7 @@ def sequential_scaling(
         # A more sophisticated implementation might use a single agent
         # that can handle both initial generation and refinement.
         refinement_agent = create_agent_executor(reasoning_bank.llm)
-        trajectory = refinement_agent.invoke(
-            {"memories": formatted_memories, "query": refinement_prompt}
-        )
+        trajectory = refinement_agent.invoke({"memories": formatted_memories, "query": refinement_prompt})
 
     # 3. Add the final trajectory to the ReasoningBank.
     reasoning_bank.add_experience(trajectory, query)

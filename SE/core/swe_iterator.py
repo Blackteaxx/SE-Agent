@@ -7,39 +7,40 @@ This script provides a unified interface for running SWE-agent batch tasks
 with configurable parameters loaded from YAML config files.
 """
 
+import argparse
 import json
 import sys
-import yaml
-import argparse
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any
 
-from sweagent.run.run_batch import RunBatchConfig, RunBatch
+import yaml
+
+from sweagent.agent.hooks.intelligent_guidance_hook import load_enhancement_data
+from sweagent.run.run_batch import RunBatch, RunBatchConfig
 from sweagent.utils.config import load_environment_variables
-from sweagent.agent.hooks.intelligent_guidance_hook import create_intelligent_guidance_hook, load_enhancement_data
 
 
 class UnifiedRunner:
     """Unified runner for SWE-agent batch processing."""
 
-    def __init__(self, config_path: str, enhancement_json_path: Optional[str] = None):
+    def __init__(self, config_path: str, enhancement_json_path: str | None = None):
         """Initialize the runner with a config file."""
         # Config paths are relative to project root (630_swe)
         self.config_path = Path(config_path)
         self.enhancement_json_path = enhancement_json_path
         self.config = self._load_config()
 
-    def _load_config(self) -> Dict[str, Any]:
+    def _load_config(self) -> dict[str, Any]:
         """Load configuration from YAML file."""
         if not self.config_path.exists():
             raise FileNotFoundError(f"Config file not found: {self.config_path}")
 
-        with open(self.config_path, "r", encoding="utf-8") as f:
+        with open(self.config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
         return config
 
-    def _validate_and_prepare_paths(self) -> Dict[str, Any]:
+    def _validate_and_prepare_paths(self) -> dict[str, Any]:
         """Validate and prepare file paths from config."""
         config = self.config.copy()
 
@@ -51,7 +52,7 @@ class UnifiedRunner:
 
         # Validate JSON file content
         try:
-            with open(json_file_path, "r", encoding="utf-8") as f:
+            with open(json_file_path, encoding="utf-8") as f:
                 data = json.load(f)
             key = config["instances"]["key"]
             if key not in data:
@@ -87,7 +88,7 @@ class UnifiedRunner:
 
         return config
 
-    def _merge_base_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
+    def _merge_base_config(self, config: dict[str, Any]) -> dict[str, Any]:
         """Merge with base configuration file if specified."""
         if "base_config" not in config:
             return config
@@ -97,7 +98,7 @@ class UnifiedRunner:
             print(f"Warning: Base config file not found: {base_config_path}")
             return config
 
-        with open(base_config_path, "r", encoding="utf-8") as f:
+        with open(base_config_path, encoding="utf-8") as f:
             base_config = yaml.safe_load(f)
 
         # Merge configs with current config taking precedence
@@ -112,7 +113,7 @@ class UnifiedRunner:
 
         return merged_config
 
-    def _build_run_config(self) -> Dict[str, Any]:
+    def _build_run_config(self) -> dict[str, Any]:
         """Build the final configuration for RunBatch."""
         config = self._validate_and_prepare_paths()
         config = self._merge_base_config(config)

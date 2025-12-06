@@ -7,7 +7,7 @@ PerfAgent 配置系统
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 import yaml
 
@@ -72,7 +72,7 @@ class PromptConfig:
     # 实例系统模板附加内容目录（包含若干 YAML 文件）（兼容旧流程）
     instance_templates_dir: Path | None = None
     include_all_history: bool = False
-    local_memory: Optional[str] = None
+    local_memory: str | None = None
 
 
 @dataclass

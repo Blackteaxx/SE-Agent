@@ -1,6 +1,5 @@
 import concurrent.futures
-import os
-from typing import Any, Dict, List
+from typing import Any
 
 from .analysis import analyze_samples
 from .run_tests import run_tests
@@ -9,7 +8,7 @@ from .run_tests import run_tests
 def run_performance_benchmark(
     lang: str,
     solution: str,
-    test_cases: List[Dict[str, Any]],
+    test_cases: list[dict[str, Any]],
     evaluator: str,
     test_runner: str | None = None,
     num_runs: int = 5,
@@ -17,7 +16,7 @@ def run_performance_benchmark(
     memory_limit: int = 1024,
     trim_ratio: float = 0.1,
     max_workers: int = 4,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Runs a performance benchmark for a given solution against a set of test cases.
 
@@ -136,9 +135,9 @@ def run_performance_benchmark(
         )
 
     # Collect aggregated metrics per run only if all tests passed
-    successful_runtimes: List[float] = []
-    successful_memories: List[float] = []
-    successful_integrals: List[float] = []
+    successful_runtimes: list[float] = []
+    successful_memories: list[float] = []
+    successful_integrals: list[float] = []
     if pass_rate == 1.0:
         for test_case_results in all_results:
             if bool(test_case_results) and all(tc.get("passed", False) for tc in test_case_results):

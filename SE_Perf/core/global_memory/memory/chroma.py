@@ -1,0 +1,27 @@
+"""ChromaDB-based memory backend implementation."""
+
+import uuid
+
+import chromadb
+
+from .base import MemoryBackend
+
+
+class ChromaMemoryBackend(MemoryBackend):
+    """A memory backend using ChromaDB collections for vector storage."""
+
+    def __init__(self, collection_name: str = "global_memory") -> None:
+        self.client = chromadb.Client()
+        self.collection = self.client.get_or_create_collection(name=collection_name)
+
+    def add(self, items: list[dict]) -> None:
+        self.collection.add(
+            ids=[str(uuid.uuid4()) for _ in items],
+            embeddings=[item["embedding"] for item in items],
+            metadatas=[item["metadata"] for item in items],
+            documents=[item["document"] for item in items],
+        )
+
+    def query(self, query_embedding: list[float], k: int) -> list[dict]:
+        results = self.collection.query(query_embeddings=[query_embedding], n_results=k)
+        return results["metadatas"][0] if results.get("metadatas") else []

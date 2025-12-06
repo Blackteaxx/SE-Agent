@@ -7,7 +7,8 @@ SE框架日志配置模块
 """
 
 from pathlib import Path
-from .log import get_logger, add_file_handler
+
+from .log import add_file_handler, get_logger
 
 
 class SELoggerManager:

@@ -12,6 +12,7 @@ class SetStatusAgentHook(AbstractAgentHook):
         self._cost = 0.0
         self._i_attempt = 0
         self._previous_cost = 0.0
+
     # def on_init(self, agent):
     #     print(f"SetStatusAgentHook: {self._id}")
     #     print(f"agent: {agent}")

@@ -12,20 +12,18 @@ SE Operators Base Classes
 import abc
 import concurrent.futures
 import json
-import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import yaml
-from core.utils.se_logger import get_se_logger
-
 from core.utils.llm_client import LLMClient
+from core.utils.se_logger import get_se_logger
 
 
 class BaseOperator(abc.ABC):
     """SE算子基类，定义通用功能和接口"""
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         """
         初始化算子
 
@@ -34,7 +32,7 @@ class BaseOperator(abc.ABC):
         """
         self.config = config
         self.model = None  # LLM模型实例（旧路径）
-        self.llm_client: Optional[LLMClient] = None  # 统一的 OpenAI LLM 客户端
+        self.llm_client: LLMClient | None = None  # 统一的 OpenAI LLM 客户端
         self.logger = get_se_logger(f"operator.{self.get_name()}", emoji="🔧")
 
     def _setup_model(self) -> None:
@@ -68,16 +66,12 @@ class BaseOperator(abc.ABC):
         history.append({"role": "user", "content": prompt})
 
         try:
-            temp = (
-                self.config.get("operator_models", self.config.get("model", {})).get("temperature", 0.3)
-            )
-            max_out = (
-                self.config.get("operator_models", self.config.get("model", {})).get("max_output_tokens")
-            )
+            temp = self.config.get("operator_models", self.config.get("model", {})).get("temperature", 0.3)
+            max_out = self.config.get("operator_models", self.config.get("model", {})).get("max_output_tokens")
             # 允许算子或模型配置控制是否启用“思考模式”
             # 优先从 operator_models 读取，其次回退 model 配置；默认为 None（使用模型默认行为）
-            enable_thinking_cfg = (
-                self.config.get("operator_models", self.config.get("model", {})).get("enable_thinking")
+            enable_thinking_cfg = self.config.get("operator_models", self.config.get("model", {})).get(
+                "enable_thinking"
             )
 
             message = self.llm_client.call_llm(
@@ -94,7 +88,7 @@ class BaseOperator(abc.ABC):
             self.logger.error(f"LLM API调用失败: {e}")
             return ""
 
-    def _discover_instances(self, workspace_dir: Path, current_iteration: int) -> List[Dict[str, Any]]:
+    def _discover_instances(self, workspace_dir: Path, current_iteration: int) -> list[dict[str, Any]]:
         """
         发现可处理的实例列表
 
@@ -141,7 +135,7 @@ class BaseOperator(abc.ABC):
             problem_file = list(instance_dir.glob("*.problem"))[0]
             if not problem_file:
                 continue
-            with open(problem_file, "r", encoding="utf-8") as f:
+            with open(problem_file, encoding="utf-8") as f:
                 problem_description = f.read().strip()
 
             instances.append(
@@ -157,7 +151,7 @@ class BaseOperator(abc.ABC):
         self.logger.info(f"发现 {len(instances)} 个可处理的实例")
         return instances
 
-    def _load_trajectory_data(self, trajectory_file: Path) -> Dict[str, Any]:
+    def _load_trajectory_data(self, trajectory_file: Path) -> dict[str, Any]:
         """
         加载轨迹数据（复用Aeon generators的数据加载逻辑）
 
@@ -168,13 +162,13 @@ class BaseOperator(abc.ABC):
             轨迹数据字典
         """
         try:
-            with open(trajectory_file, "r", encoding="utf-8") as f:
+            with open(trajectory_file, encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
             self.logger.error(f"加载轨迹文件失败 {trajectory_file}: {e}")
             return {}
 
-    def _load_traj_pool(self, workspace_dir: Path, instance_name: Optional[str] = None) -> Dict[str, Any]:
+    def _load_traj_pool(self, workspace_dir: Path, instance_name: str | None = None) -> dict[str, Any]:
         """
         加载工作目录下的 traj.pool 文件。
 
@@ -194,7 +188,7 @@ class BaseOperator(abc.ABC):
             return {}
 
         try:
-            with open(traj_pool_file, "r", encoding="utf-8") as f:
+            with open(traj_pool_file, encoding="utf-8") as f:
                 pool_data = json.load(f)
 
             if not isinstance(pool_data, dict):
@@ -216,7 +210,7 @@ class BaseOperator(abc.ABC):
             self.logger.error(f"加载traj.pool失败 {traj_pool_file}: {e}")
             return {}
 
-    def _process_single_instance(self, instance_info: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    def _process_single_instance(self, instance_info: dict[str, Any]) -> tuple[str, str] | None:
         """
         处理单个实例（在子类中实现具体逻辑）
 
@@ -259,7 +253,7 @@ class BaseOperator(abc.ABC):
 
     @abc.abstractmethod
     def _generate_content(
-        self, instance_info: Dict[str, Any], problem_statement: str, trajectory_data: Dict[str, Any]
+        self, instance_info: dict[str, Any], problem_statement: str, trajectory_data: dict[str, Any]
     ) -> str:
         """
         生成内容（子类实现核心逻辑）
@@ -275,7 +269,7 @@ class BaseOperator(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def process(self, workspace_dir: str, current_iteration: int, num_workers: int = 1) -> Optional[Dict[str, str]]:
+    def process(self, workspace_dir: str, current_iteration: int, num_workers: int = 1) -> dict[str, str] | None:
         """
         处理算子逻辑的主入口方法
 
@@ -351,7 +345,7 @@ class TemplateOperator(BaseOperator):
         """获取策略前缀标识（如 'ALTERNATIVE SOLUTION STRATEGY'）"""
         pass
 
-    def process(self, workspace_dir: str, current_iteration: int, num_workers: int = 1) -> Optional[Dict[str, str]]:
+    def process(self, workspace_dir: str, current_iteration: int, num_workers: int = 1) -> dict[str, str] | None:
         """
         处理模板算子逻辑
 
@@ -423,7 +417,7 @@ class EnhanceOperator(BaseOperator):
     返回 enhance_history_filter_json 参数
     """
 
-    def process(self, workspace_dir: str, current_iteration: int, num_workers: int = 1) -> Optional[Dict[str, str]]:
+    def process(self, workspace_dir: str, current_iteration: int, num_workers: int = 1) -> dict[str, str] | None:
         """
         处理增强算子逻辑（未开发）
 

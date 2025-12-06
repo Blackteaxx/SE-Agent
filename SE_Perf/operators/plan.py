@@ -118,7 +118,9 @@ class PlanOperator(TemplateOperator):
             """
             pcfg = self.config.get("prompt_config", {}) if isinstance(self.config, dict) else {}
             plan_cfg = pcfg.get("plan", {}) if isinstance(pcfg, dict) else {}
-            sys_prompt = plan_cfg.get("system_prompt") or """You are a world-class Algorithm Engineer and Competitive Programmer. Your task is to design EXACTLY K distinct, high-performance algorithmic strategies for a given problem.
+            sys_prompt = (
+                plan_cfg.get("system_prompt")
+                or """You are a world-class Algorithm Engineer and Competitive Programmer. Your task is to design EXACTLY K distinct, high-performance algorithmic strategies for a given problem.
 
 Guidelines:
 1. **Diversity**: The strategies MUST differ in algorithmic paradigms (e.g., Dynamic Programming, Greedy, BFS/DFS, Two Pointers, Sliding Window, Bit Manipulation) or Data Structures.
@@ -134,6 +136,7 @@ Guidelines:
     ```
 - The array must contain exactly K strings.
 - NO conversational text outside the code block."""
+            )
 
             # 在 User Prompt 中再次强调 K，防止模型忽略
             up_template = plan_cfg.get("user_prompt_template") or (

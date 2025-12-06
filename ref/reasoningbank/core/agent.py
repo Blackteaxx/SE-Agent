@@ -1,10 +1,9 @@
 """Agent-related functionalities for the ReasoningBank library."""
 
-from langchain_core.prompts import PromptTemplate
 from langchain_core.language_models.base import BaseLanguageModel
-from langchain_core.runnables import RunnableSequence
 from langchain_core.output_parsers import StrOutputParser
-from typing import List, Dict
+from langchain_core.prompts import PromptTemplate
+from langchain_core.runnables import RunnableSequence
 
 
 def create_agent_executor(llm: BaseLanguageModel) -> RunnableSequence:
@@ -38,7 +37,7 @@ def create_agent_executor(llm: BaseLanguageModel) -> RunnableSequence:
     return prompt | llm | StrOutputParser()
 
 
-def format_memories_for_prompt(memories: List[Dict]) -> str:
+def format_memories_for_prompt(memories: list[dict]) -> str:
     """
     Formats a list of memory dictionaries into a string suitable for a prompt.
 

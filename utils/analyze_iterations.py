@@ -4,7 +4,7 @@ import argparse
 import json
 import math
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 
 def to_float(rt: Any) -> float:
@@ -23,10 +23,10 @@ def to_float(rt: Any) -> float:
         return float("inf")
 
 
-def compute_metrics(entries: List[Tuple[int, float]], Ks: List[int]) -> Dict[int, Dict[str, Any]]:
+def compute_metrics(entries: list[tuple[int, float]], Ks: list[int]) -> dict[int, dict[str, Any]]:
     entries.sort(key=lambda x: x[0])
 
-    metrics: Dict[int, Dict[str, Any]] = {}
+    metrics: dict[int, dict[str, Any]] = {}
     for K in Ks:
         vals = [rt for k, rt in entries if k <= K]
         if not vals:
@@ -57,6 +57,7 @@ def compute_metrics(entries: List[Tuple[int, float]], Ks: List[int]) -> Dict[int
         metrics[K]["best_pass_rate_upto"] = 1.0 if has_finite else 0.0
     return metrics
 
+
 def sanitize_for_json(x: Any) -> Any:
     if isinstance(x, float):
         return x if math.isfinite(x) else None
@@ -67,23 +68,23 @@ def sanitize_for_json(x: Any) -> Any:
     return x
 
 
-def aggregate_limits(data: Dict[str, Any], Ks: List[int]) -> Dict[int, Dict[str, float]]:
-    agg: Dict[int, Dict[str, float]] = {}
+def aggregate_limits(data: dict[str, Any], Ks: list[int]) -> dict[int, dict[str, float]]:
+    agg: dict[int, dict[str, float]] = {}
     for K in Ks:
         agg[K] = {
             "pass_rate_mean": 0.0,
             "best_pass_rate_upto_mean": 0.0,
         }
 
-    perK_pass_rates: Dict[int, List[float]] = {K: [] for K in Ks}
-    perK_best_pass_upto_rates: Dict[int, List[float]] = {K: [] for K in Ks}
+    perK_pass_rates: dict[int, list[float]] = {K: [] for K in Ks}
+    perK_best_pass_upto_rates: dict[int, list[float]] = {K: [] for K in Ks}
 
     for inst, info in data.items():
         sname = inst.strip().lower()
         if ("system_prompt" in sname) or ("system prompt" in sname):
             continue
         iter_map = info.get("iteration", {})
-        entries: List[Tuple[int, float]] = []
+        entries: list[tuple[int, float]] = []
         for k_str, v in iter_map.items():
             try:
                 k = int(k_str)
@@ -141,13 +142,13 @@ def main():
     if max_iter > 0 and (not Ks or Ks[-1] != max_iter):
         Ks.append(max_iter)
 
-    instance_rows: List[Dict[str, Any]] = []
+    instance_rows: list[dict[str, Any]] = []
     for inst, info in data.items():
         sname = inst.strip().lower()
         if ("system_prompt" in sname) or ("system prompt" in sname):
             continue
         iter_map = info.get("iteration", {})
-        entries: List[Tuple[int, float]] = []
+        entries: list[tuple[int, float]] = []
         for k_str, v in iter_map.items():
             try:
                 k = int(k_str)
@@ -158,10 +159,12 @@ def main():
         if not entries:
             continue
         metrics = compute_metrics(entries, Ks)
-        instance_rows.append({
-            "instance": inst,
-            "metrics": metrics,
-        })
+        instance_rows.append(
+            {
+                "instance": inst,
+                "metrics": metrics,
+            }
+        )
 
     agg = aggregate_limits(data, Ks)
 
@@ -173,7 +176,9 @@ def main():
 
     if args.output:
         cleaned = sanitize_for_json(summary)
-        Path(args.output).write_text(json.dumps(cleaned, indent=2, ensure_ascii=False, allow_nan=False), encoding="utf-8")
+        Path(args.output).write_text(
+            json.dumps(cleaned, indent=2, ensure_ascii=False, allow_nan=False), encoding="utf-8"
+        )
 
     # 打印简要摘要
     print("=== 轮数上限聚合摘要 ===")

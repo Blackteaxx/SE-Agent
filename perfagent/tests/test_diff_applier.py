@@ -2,8 +2,6 @@
 DiffApplier 的 pytest 测试用例（SEARCH/REPLACE 区块格式）
 """
 
-import pytest
-
 from perfagent.diff_applier import DiffApplier
 
 

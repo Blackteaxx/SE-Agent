@@ -375,13 +375,14 @@ def _to_map(items, use_index: bool):
         seq = it.get("series") or []
         if use_index:
             seq = [(i, y) for i, (_, y) in enumerate(seq)]
-        m[str(it["name"])]=seq
+        m[str(it["name"])] = seq
     return m
 
 
 def _plot_matplotlib(inst_map_list, labels, out_dir: Path, width: int, height: int):
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except Exception:
@@ -391,8 +392,8 @@ def _plot_matplotlib(inst_map_list, labels, out_dir: Path, width: int, height: i
         names.update(m.keys())
     out_dir.mkdir(parents=True, exist_ok=True)
     for name in names:
-        fig = plt.figure(figsize=(width/100.0, height/100.0), dpi=100)
-        ax = fig.add_subplot(1,1,1)
+        fig = plt.figure(figsize=(width / 100.0, height / 100.0), dpi=100)
+        ax = fig.add_subplot(1, 1, 1)
         for idx, m in enumerate(inst_map_list):
             s = m.get(name)
             if not s:
@@ -431,7 +432,7 @@ def main():
         return
     labels = args.labels
     if not labels or len(labels) < len(paths):
-        labels = [ _infer_label(p) for p in paths ]
+        labels = [_infer_label(p) for p in paths]
     # 构造每个输入的横轴模式（强制真实 iteration）
     modes = ["real" for _ in paths]
 

@@ -1,31 +1,31 @@
+import logging
+import multiprocessing
 import os
+import platform
 import queue
 import random
-import logging
-import requests
-import platform
 import subprocess
 import threading
-import multiprocessing
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import cache
-from typing import Any, Optional, Protocol, Type, TypeVar
+from typing import Any, Protocol, TypeVar
 
+import numpy as np
+import requests
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-import numpy as np
-from dotenv import load_dotenv
+
 load_dotenv()
 
 from ..utils import EFFIBENCH_REGISTRY
 
-
-
 # -------------------------------------------------------------------
 # CPU Topology Detection
 # -------------------------------------------------------------------
+
 
 @cache
 def get_cpu_topology() -> dict[int, list[int]]:
@@ -56,19 +56,21 @@ def get_cpu_topology() -> dict[int, list[int]]:
             topology[i] = [i]
     return topology
 
+
 def get_num_physical_cores() -> int:
     return len(get_cpu_topology())
+
 
 def set_cpu_affinity(pid: int, cpu_list: list[int]):
     """
     Set CPU affinity for a process across platforms.
-    
+
     Args:
         pid: Process ID
         cpu_list: List of CPU cores to bind to
     """
     system = platform.system()
-    
+
     if system == "Linux":
         # Linux implementation using taskset
         cpu_str = ",".join(map(str, cpu_list))
@@ -79,6 +81,7 @@ def set_cpu_affinity(pid: int, cpu_list: list[int]):
             logging.warning(f"Failed to set CPU affinity for {pid} to {cpu_str}")
     else:
         logging.warning(f"CPU affinity currently not implemented for {system}")
+
 
 def bind_main_process_to_last_core():
     """
@@ -96,18 +99,20 @@ def bind_main_process_to_last_core():
     current_pid = os.getpid()
     set_cpu_affinity(current_pid, last_core_logical_cpus)
 
+
 # -------------------------------------------------------------------
 # Efficiency Calculation
 # -------------------------------------------------------------------
 
+
 def calculate_efficiency_integral(times: list[int], mems: list[int]) -> float:
     """
     Calculate the area under the memory-time curve (efficiency integral).
-    
+
     Args:
         times: List of timestamps in nanoseconds
         mems: List of memory values in KB
-        
+
     Returns:
         float: The integral value in MB·s
     """
@@ -117,58 +122,69 @@ def calculate_efficiency_integral(times: list[int], mems: list[int]) -> float:
     # Need at least two points to calculate area
     if len(times) < 2:
         return 0.0
-    
+
     # Convert to seconds and MB for consistent units
     times_sec = np.array(times) / 1000000000  # nanoseconds to seconds
     mems_mb = np.array(mems) / 1000  # KB to MB
-    
+
     # Calculate area using trapezoidal rule
     area = np.trapz(mems_mb, times_sec)
     return area
+
 
 # -------------------------------------------------------------------
 # Pydantic Models
 # -------------------------------------------------------------------
 
+
 class CodeExecutionRequest(BaseModel):
     code: str
     language: str
-    libraries: Optional[list[str]] = None
-    stdin: Optional[str] = None
-    time_limit: Optional[int] = None
-    memory_limit: Optional[float] = None
+    libraries: list[str] | None = None
+    stdin: str | None = None
+    time_limit: int | None = None
+    memory_limit: float | None = None
+
 
 class BatchSubmissionRequest(BaseModel):
     requests: list[CodeExecutionRequest]
 
+
 class SubmissionResponse(BaseModel):
     submission_id: int
+
 
 class BatchSubmissionResponse(BaseModel):
     submission_ids: list[int]
 
+
 class BatchGetSubmissionRequest(BaseModel):
     submission_ids: list[int]
+
 
 class CodeExecutionResponse(BaseModel):
     submission_id: int
     status: str = Field(..., description="waiting|processing|done|timeout|error|cancelled|oom")
-    text: Optional[str] = None
-    exit_code: Optional[int] = None
-    runtime: Optional[float] = None
-    memory: Optional[float] = None
-    integral: Optional[float] = None
+    text: str | None = None
+    exit_code: int | None = None
+    runtime: float | None = None
+    memory: float | None = None
+    integral: float | None = None
+
 
 class BatchCodeExecutionResponse(BaseModel):
     results: list[CodeExecutionResponse]
+
 
 class CancelResponse(BaseModel):
     submission_id: int
     status: str
 
+
 # -------------------------------------------------------------------
 # Common Utilities for Managers
 # -------------------------------------------------------------------
+
 
 def parse_memory_profile(profile_text: str, skip_header: bool = True) -> tuple[list[int], list[int]]:
     """Parse lines of 'timestamp memory' into two lists."""
@@ -188,23 +204,26 @@ def parse_memory_profile(profile_text: str, skip_header: bool = True) -> tuple[l
             pass
     return times, mems
 
+
 # -------------------------------------------------------------------
 # Submission Record
 # -------------------------------------------------------------------
 
+
 @dataclass
 class SubmissionRecord:
     """Represents a code execution submission with its own lock for concurrency control."""
+
     id: int
-    request: 'CodeExecutionRequest'
+    request: "CodeExecutionRequest"
     status: str = "waiting"
-    exit_code: Optional[int] = None
-    text: Optional[str] = None
-    runtime: Optional[float] = None
-    memory: Optional[float] = None
-    integral: Optional[float] = None
+    exit_code: int | None = None
+    text: str | None = None
+    runtime: float | None = None
+    memory: float | None = None
+    integral: float | None = None
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
-    
+
     def to_dict(self) -> dict[str, Any]:
         """Convert submission record to a dictionary (excluding the lock)."""
         return {
@@ -217,27 +236,35 @@ class SubmissionRecord:
             "integral": self.integral,
         }
 
+
 # -------------------------------------------------------------------
 # Session Protocol
 # -------------------------------------------------------------------
 
+
 class SandboxSessionProtocol(Protocol):
     """Protocol defining the interface required for sandbox sessions."""
-    
+
     def open(self, skip_setup: bool = False) -> None:
         """Open the session and prepare resources."""
         ...
-        
+
     def close(self) -> None:
         """Close the session and clean up resources."""
         ...
-        
-    def run(self, code: str, libraries: Optional[list] = None, stdin: Optional[str] = None,
-            time_limit: Optional[float] = None, memory_limit: Optional[float] = None,
-            return_statistics: bool = True) -> Any:
+
+    def run(
+        self,
+        code: str,
+        libraries: list | None = None,
+        stdin: str | None = None,
+        time_limit: float | None = None,
+        memory_limit: float | None = None,
+        return_statistics: bool = True,
+    ) -> Any:
         """
         Execute code in the session and return results.
-        
+
         Args:
             code: Code to run
             libraries: List of libraries to install
@@ -247,8 +274,8 @@ class SandboxSessionProtocol(Protocol):
             return_statistics: If True, calculate and return execution statistics (runtime, memory, integral)
         """
         ...
-        
-    def cat_profile(self) -> Optional[str]:
+
+    def cat_profile(self) -> str | None:
         """Return the profiling information for the last execution."""
         ...
 
@@ -258,6 +285,7 @@ class SandboxSessionProtocol(Protocol):
 # -------------------------------------------------------------------
 
 T = TypeVar("T", bound=SandboxSessionProtocol)
+
 
 class BaseExecutionManager(ABC):
     """
@@ -272,24 +300,25 @@ class BaseExecutionManager(ABC):
         "integral": Optional[float],
     }
     """
-    def __init__(self, session_class: Type[T], num_workers: Optional[int] = None, skip_setup: bool = False):
+
+    def __init__(self, session_class: type[T], num_workers: int | None = None, skip_setup: bool = False):
         if num_workers is None:
             num_workers = get_num_physical_cores() - 1
         self.num_workers = num_workers
         self.session_class = session_class
-        
+
         # Request queue
         self.req_queue = queue.Queue()
-        
+
         # Submission tracking
         self.submission_id = 0
         self.submissions: dict[int, SubmissionRecord] = {}
         self.global_lock = threading.Lock()  # Used only for dict operations (add/remove)
-        
+
         # Session tracking
         self.sessions: dict[tuple[int, str], T] = {}
         self.sessions_lock = threading.Lock()
-        
+
         if skip_setup:
             logging.info("Skipping setup.")
         else:
@@ -329,16 +358,16 @@ class BaseExecutionManager(ABC):
         record = self.submissions.get(sid)
         if record is None:
             logging.error(f"[Worker {worker_id}] Submission {sid} not found.")
-            return # Skip if submission vanished somehow
-            
+            return  # Skip if submission vanished somehow
+
         # Use the record's lock for state checking and modification
         with record.lock:
             if record.status == "cancelled":
                 logging.debug(f"[Worker {worker_id}] Skipping cancelled submission {sid}")
-                return # Skip if cancelled before processing started
-            
+                return  # Skip if cancelled before processing started
+
             record.status = "processing"
-        
+
         # Execute without holding the lock
         try:
             self.execute_in_sandbox(worker_id, record)
@@ -381,10 +410,7 @@ class BaseExecutionManager(ABC):
         """Adds a single submission entry and returns the ID. Assumes global_lock is held."""
         sid = self.submission_id
         self.submission_id += 1
-        self.submissions[sid] = SubmissionRecord(
-            id=sid,
-            request=req
-        )
+        self.submissions[sid] = SubmissionRecord(id=sid, request=req)
         return sid
 
     def submit_code(self, req: CodeExecutionRequest) -> int:
@@ -396,7 +422,7 @@ class BaseExecutionManager(ABC):
 
         with self.global_lock:
             sid = self._add_submission_entry(req)
-            
+
         self.req_queue.put(sid)
         return sid
 
@@ -408,25 +434,25 @@ class BaseExecutionManager(ABC):
         # Validate all requests before acquiring the lock
         for req in batch_req.requests:
             if not req.code.strip():
-                raise HTTPException(status_code=400, detail=f"Request with empty code found in batch.")
+                raise HTTPException(status_code=400, detail="Request with empty code found in batch.")
             if not req.language.strip():
-                raise HTTPException(status_code=400, detail=f"Request with unspecified language found in batch.")
-        
+                raise HTTPException(status_code=400, detail="Request with unspecified language found in batch.")
+
         submission_ids = []
         # Use smaller critical section to reduce lock contention
         with self.global_lock:
             for req in batch_req.requests:
                 sid = self._add_submission_entry(req)
                 submission_ids.append(sid)
-        
+
         self.req_queue.put(submission_ids)
-        
+
         return submission_ids
 
     def fetch_batch_results(self, submission_ids: list[int]) -> list[dict[str, Any]]:
         """Fetch the results for a batch of submission IDs."""
         results = []
-        
+
         # No global lock needed - use per-record locking
         for sid in submission_ids:
             record = self.submissions.get(sid)
@@ -434,7 +460,7 @@ class BaseExecutionManager(ABC):
                 with record.lock:
                     # Make a copy while holding record lock
                     results.append(record.to_dict())
-        
+
         return results
 
     def fetch_result(self, submission_id: int) -> dict[str, Any]:
@@ -442,7 +468,7 @@ class BaseExecutionManager(ABC):
         record = self.submissions.get(submission_id)
         if record is None:
             raise HTTPException(status_code=404, detail="Submission not found.")
-            
+
         with record.lock:
             # Get a copy of the submission data under per-record lock
             return record.to_dict()
@@ -450,10 +476,10 @@ class BaseExecutionManager(ABC):
     def cancel_submission(self, submission_id: int) -> dict[str, Any]:
         """Cancel a submission by ID."""
         record = self.submissions.get(submission_id)
-        
+
         if record is None:
             raise HTTPException(status_code=404, detail="Submission not found.")
-        
+
         with record.lock:
             # If waiting => mark cancelled
             if record.status == "waiting":
@@ -463,16 +489,16 @@ class BaseExecutionManager(ABC):
                 record.status = "cancelled"
                 record.exit_code = 1
                 record.text = ""
-        
+
         return {"submission_id": submission_id, "status": "cancelled"}
 
     def execute_in_sandbox(self, worker_id: int, record: SubmissionRecord):
         """Execute code in the sandbox and process results."""
         req = record.request
-        
+
         try:
             session = self.get_session(worker_id, req.language)
-            
+
             # Filter out libraries that are already installed
             libraries = []
             if req.libraries:  # Check if libraries is not None
@@ -480,7 +506,7 @@ class BaseExecutionManager(ABC):
                     libraries = [l for l in req.libraries if l not in EFFIBENCH_REGISTRY[req.language]["packages"]]
                 else:
                     libraries = req.libraries
-            
+
             # Run with statistics to get metrics
             res = session.run(
                 code=req.code,
@@ -488,14 +514,14 @@ class BaseExecutionManager(ABC):
                 stdin=req.stdin,
                 time_limit=req.time_limit,
                 memory_limit=req.memory_limit,
-                return_statistics=True
+                return_statistics=True,
             )
-            
+
             # Process execution result
             text = res.text
             exit_code = res.exit_code
             status = "done"
-            
+
             # Set appropriate status based on exit code
             if exit_code == 137:
                 status = "oom"
@@ -505,35 +531,35 @@ class BaseExecutionManager(ABC):
                 text = f"Time limit exceeded ({req.time_limit} s)\n{text}"
             elif exit_code != 0:
                 status = "error"
-                
+
         except Exception as e:
             status = "error"
             exit_code = 1
             text = f"Execution error: {str(e)}"
             logging.error(f"Error executing code: {e}")
             res = None  # Ensure res is defined even in case of exception
-        
+
         with record.lock:
             record.status = status
             record.exit_code = exit_code
             record.text = text if text is not None else ""
-            
+
             # Set metrics from sandbox response if available
             if status == "done" and res is not None:
                 # Runtime (convert from ns to seconds if needed)
-                if hasattr(res, 'runtime') and res.runtime is not None:
+                if hasattr(res, "runtime") and res.runtime is not None:
                     record.runtime = res.runtime
                 else:
                     record.runtime = 0.0
-                
+
                 # Memory
-                if hasattr(res, 'memory') and res.memory is not None:
+                if hasattr(res, "memory") and res.memory is not None:
                     record.memory = res.memory
                 else:
                     record.memory = 0.0
-                
+
                 # Integral
-                if hasattr(res, 'integral') and res.integral is not None:
+                if hasattr(res, "integral") and res.integral is not None:
                     record.integral = res.integral
                 else:
                     record.integral = 0.0
@@ -543,33 +569,34 @@ class BaseExecutionManager(ABC):
                 record.memory = 0.0
                 record.integral = 0.0
 
-    
+
 # -------------------------------------------------------------------
 # FastAPI App Creation
 # -------------------------------------------------------------------
 
+
 def create_fastapi_app(manager_instance):
     """Create a FastAPI application with code execution endpoints."""
     from contextlib import asynccontextmanager
-    
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Bind the main process to the last physical core to ensure it doesn't
         # compete with worker processes for CPU resources
         bind_main_process_to_last_core()
-        
+
         # Start worker threads after binding the main process
         manager_instance.start_workers()
         yield
         manager_instance.stop_workers()
-    
+
     app = FastAPI(lifespan=lifespan)
-    
+
     @app.get("/health", status_code=200)
     def health_check():
         """Health check endpoint for backend availability monitoring."""
         return {"status": "ok", "queue_size": manager_instance.req_queue.qsize()}
-    
+
     @app.post("/submit", response_model=SubmissionResponse)
     def submit_code_endpoint(data: CodeExecutionRequest):
         sid = manager_instance.submit_code(data)
@@ -579,22 +606,22 @@ def create_fastapi_app(manager_instance):
     def batch_submit_code_endpoint(data: BatchSubmissionRequest):
         sids = manager_instance.submit_batch(data)
         return BatchSubmissionResponse(submission_ids=sids)
-    
+
     @app.get("/submission/{submission_id}", response_model=CodeExecutionResponse)
     def get_submission_endpoint(submission_id: int):
         info = manager_instance.fetch_result(submission_id)
         return CodeExecutionResponse(**info)
-    
+
     @app.post("/submissions", response_model=BatchCodeExecutionResponse)
     def batch_get_submission_endpoint(data: BatchGetSubmissionRequest):
         results = manager_instance.fetch_batch_results(data.submission_ids)
         return BatchCodeExecutionResponse(results=[CodeExecutionResponse(**res) for res in results])
-    
+
     @app.post("/cancel/{submission_id}", response_model=CancelResponse)
     def cancel_submission_endpoint(submission_id: int):
         res = manager_instance.cancel_submission(submission_id)
         return CancelResponse(**res)
-    
+
     return app
 
 
@@ -602,18 +629,21 @@ def create_fastapi_app(manager_instance):
 # Backend Health Management
 # -------------------------------------------------------------------
 
+
 # Custom exception for backend availability errors
 class BackendUnavailableError(Exception):
     """Raised when the sandbox backend is unavailable or unhealthy."""
+
     pass
+
 
 class BackendManager:
     """Manages backend availability and selection with health checks."""
-    
+
     def __init__(self, urls=None, health_check_interval=60):
         """
         Initialize backend manager with URLs and health check configuration.
-        
+
         Args:
             urls: List of backend URLs (if None, loaded from environment)
             health_check_interval: Seconds between health checks for unavailable backends
@@ -629,14 +659,14 @@ class BackendManager:
         self._random = random.Random()  # Thread-safe random instance
         self._initialize_backends()
         print(f"Initialized backends: {self._available_backends}")
-        
+
     def _initialize_backends(self):
         """Initialize the backend list from environment variables or provided URLs."""
         with self._lock:
             if self._urls is None:
                 raw_url = os.getenv("BACKEND_BASE_URL", "http://localhost:8000")
                 self._urls = [url.strip() for url in raw_url.split(",")]
-            
+
             # Check health of all backends
             for url in self._urls:
                 is_healthy, queue_size = self._check_backend_health(url)
@@ -645,15 +675,15 @@ class BackendManager:
                 else:
                     self._unavailable_backends.add(url)
                     self._last_check_times[url] = time.time()
-    
+
     def _check_backend_health(self, url, timeout=5):
         """
         Check if a backend is healthy and return its queue size.
-        
+
         Args:
             url: Backend URL to check
             timeout: Request timeout in seconds
-            
+
         Returns:
             tuple[bool, int | None]: (True if backend is healthy, queue_size) or (False, None)
         """
@@ -667,7 +697,7 @@ class BackendManager:
             return False, None
         except requests.RequestException:
             return False, None
-    
+
     def mark_backend_unavailable(self, url):
         """Mark a backend as unavailable after a failed request."""
         with self._lock:
@@ -680,31 +710,37 @@ class BackendManager:
 
             # Add to unavailable backends
             if url not in self._unavailable_backends:  # Ensure not to add duplicates
-                logging.warning(f"Backend {url} marked as unavailable. Available: {list(self._available_backends.keys())}, Unavailable: {len(self._unavailable_backends) + 1}")
+                logging.warning(
+                    f"Backend {url} marked as unavailable. Available: {list(self._available_backends.keys())}, Unavailable: {len(self._unavailable_backends) + 1}"
+                )
                 self._unavailable_backends.add(url)
                 self._last_check_times[url] = time.time()
             else:
                 logging.debug(f"Backend {url} already marked as unavailable")
-    
+
     def get_available_backend(self):
         """
         Get the least loaded available backend URL, updating queue sizes and rechecking unavailable backends.
-        
+
         Returns:
             str: URL of an available backend or None if none are available
         """
         with self._lock:
             current_time = time.time()
-            
-            logging.debug(f"Getting available backend. Current state - Available: {len(self._available_backends)}, Unavailable: {len(self._unavailable_backends)}")
-            
+
+            logging.debug(
+                f"Getting available backend. Current state - Available: {len(self._available_backends)}, Unavailable: {len(self._unavailable_backends)}"
+            )
+
             # Periodically refresh all available backends' queue sizes
-            should_refresh = (current_time - self._last_refresh_time >= self._refresh_interval)
+            should_refresh = current_time - self._last_refresh_time >= self._refresh_interval
             if should_refresh:
-                logging.debug(f"Refreshing backend queue sizes (last refresh: {current_time - self._last_refresh_time:.1f}s ago)")
+                logging.debug(
+                    f"Refreshing backend queue sizes (last refresh: {current_time - self._last_refresh_time:.1f}s ago)"
+                )
                 self._refresh_available_backends(current_time)
                 self._last_refresh_time = current_time
-            
+
             # Recheck unavailable backends
             unavailable_before = len(self._unavailable_backends)
             self._recheck_unavailable_backends(current_time)
@@ -715,23 +751,28 @@ class BackendManager:
             # If we have available backends, select the one with the smallest queue size
             if self._available_backends:
                 min_queue_size = min(self._available_backends.values())
-                least_loaded_backends = [url for url, q_size in self._available_backends.items()
-                                        if q_size == min_queue_size]
-                
+                least_loaded_backends = [
+                    url for url, q_size in self._available_backends.items() if q_size == min_queue_size
+                ]
+
                 if least_loaded_backends:
                     selected = self._random.choice(least_loaded_backends)
-                    logging.debug(f"Selected backend {selected} (queue_size: {min_queue_size}) from {len(least_loaded_backends)} least loaded")
+                    logging.debug(
+                        f"Selected backend {selected} (queue_size: {min_queue_size}) from {len(least_loaded_backends)} least loaded"
+                    )
                     return selected
-            
+
             # If still no backends available after all checks
             backend_status = {
                 "available": {url: queue_size for url, queue_size in self._available_backends.items()},
                 "unavailable": list(self._unavailable_backends),
-                "last_check_times": {url: current_time - check_time for url, check_time in self._last_check_times.items()}
+                "last_check_times": {
+                    url: current_time - check_time for url, check_time in self._last_check_times.items()
+                },
             }
             logging.error(f"No available backends found after re-checks. Status: {backend_status}")
             return None
-            
+
     def _refresh_available_backends(self, current_time):
         """Refresh queue sizes for all available backends."""
         available_copy = list(self._available_backends.keys())
@@ -746,7 +787,7 @@ class BackendManager:
                 self._unavailable_backends.add(url)
                 self._last_check_times[url] = current_time
                 logging.warning(f"Backend {url} is no longer available")
-                
+
     def _recheck_unavailable_backends(self, current_time):
         """Recheck unavailable backends to see if they've recovered."""
         unavailable_copy = list(self._unavailable_backends)
@@ -765,9 +806,11 @@ class BackendManager:
                     # Update last check time even if still unavailable
                     self._last_check_times[url] = current_time
 
+
 # Singleton instance of the backend manager
 _backend_manager = None
 _backend_manager_lock = threading.Lock()
+
 
 def get_backend_manager():
     """Get the singleton backend manager instance."""
@@ -783,13 +826,14 @@ def get_backend_manager():
 # Sandbox API Client Functions
 # -------------------------------------------------------------------
 
+
 def get_backend_url() -> str:
     """
     Get an available backend URL from the configured URLs.
 
     Returns:
         str: The backend URL to use
-    
+
     Raises:
         BackendUnavailableError: If no available backends
     """
@@ -800,12 +844,18 @@ def get_backend_url() -> str:
     return url
 
 
-def _make_api_request(method: str, endpoint: str, url: str, json_data=None, 
-                      params=None, request_timeout: int = 120,
-                      client_error_codes: tuple[int, ...] = (400,)) -> dict:
+def _make_api_request(
+    method: str,
+    endpoint: str,
+    url: str,
+    json_data=None,
+    params=None,
+    request_timeout: int = 120,
+    client_error_codes: tuple[int, ...] = (400,),
+) -> dict:
     """
     Helper function to make API requests with consistent error handling.
-    
+
     Args:
         method: HTTP method ("get", "post")
         endpoint: API endpoint path
@@ -814,26 +864,27 @@ def _make_api_request(method: str, endpoint: str, url: str, json_data=None,
         params: URL parameters
         request_timeout: Request timeout in seconds
         client_error_codes: HTTP status codes that should be treated as client errors
-        
+
     Returns:
         JSON response data
-        
+
     Raises:
         HTTPException: For client errors (400, 404, etc.)
         BackendUnavailableError: For backend unavailability
     """
     import time
+
     start_time = time.time()
     full_url = f"{url}/{endpoint}"
-    
+
     try:
         logging.debug(f"Making {method.upper()} request to {full_url} with timeout={request_timeout}s")
         request_fn = getattr(requests, method.lower())
         response = request_fn(full_url, json=json_data, params=params, timeout=request_timeout)
-        
+
         elapsed = time.time() - start_time
         logging.debug(f"Request to {full_url} completed in {elapsed:.2f}s with status {response.status_code}")
-        
+
         # Let client errors pass through directly
         if response.status_code in client_error_codes:
             response.raise_for_status()
@@ -843,7 +894,7 @@ def _make_api_request(method: str, endpoint: str, url: str, json_data=None,
             logging.error(f"{error_msg} (elapsed: {elapsed:.2f}s)")
             get_backend_manager().mark_backend_unavailable(url)
             raise BackendUnavailableError(error_msg)
-            
+
         return response.json()
     except requests.ConnectionError as e:
         elapsed = time.time() - start_time
@@ -860,7 +911,7 @@ def _make_api_request(method: str, endpoint: str, url: str, json_data=None,
     except requests.RequestException as e:
         elapsed = time.time() - start_time
         # Let client errors pass through from raise_for_status()
-        if hasattr(e, 'response') and e.response is not None and e.response.status_code in client_error_codes:
+        if hasattr(e, "response") and e.response is not None and e.response.status_code in client_error_codes:
             raise
         # Other exceptions indicate backend issues
         error_msg = f"Request failed to {full_url}: {type(e).__name__}: {e}"
@@ -876,24 +927,24 @@ def _make_api_request(method: str, endpoint: str, url: str, json_data=None,
 
 
 def submit_code(
-    code: str, 
-    language: str, 
+    code: str,
+    language: str,
     libraries: list[str],
-    stdin: str | None = None, 
+    stdin: str | None = None,
     time_limit: int | None = None,
     memory_limit: int | None = None,
     request_timeout: int = 120,
-    backend_base_url: str | None = None
+    backend_base_url: str | None = None,
 ) -> str:
     """Submit code to the sandbox and return the submission ID."""
     url = backend_base_url if backend_base_url else get_backend_url()
     json_data = {
-        "code": code, 
-        "language": language, 
-        "libraries": libraries, 
+        "code": code,
+        "language": language,
+        "libraries": libraries,
         "stdin": stdin,
-        "time_limit": time_limit, 
-        "memory_limit": memory_limit, 
+        "time_limit": time_limit,
+        "memory_limit": memory_limit,
     }
     response = _make_api_request("post", "submit", url, json_data, request_timeout=request_timeout)
     return response["submission_id"]
@@ -902,7 +953,7 @@ def submit_code(
 def submit_batch(
     requests_data: list[dict],
     request_timeout: int = 1200,  # Further increased timeout for batch operations
-    backend_base_url: str | None = None
+    backend_base_url: str | None = None,
 ) -> list[int]:
     """Submit a batch of code execution requests to the sandbox."""
     url = backend_base_url if backend_base_url else get_backend_url()
@@ -911,22 +962,17 @@ def submit_batch(
     return response["submission_ids"]
 
 
-def get_submission_result(
-    submission_id: str, 
-    request_timeout: int = 120,
-    backend_base_url: str | None = None
-) -> dict:
+def get_submission_result(submission_id: str, request_timeout: int = 120, backend_base_url: str | None = None) -> dict:
     """Retrieve the sandbox result for a given submission ID."""
     url = backend_base_url if backend_base_url else get_backend_url()
     endpoint = f"submission/{submission_id}"
-    return _make_api_request("get", endpoint, url, request_timeout=request_timeout, 
-                           client_error_codes=(400, 404))
+    return _make_api_request("get", endpoint, url, request_timeout=request_timeout, client_error_codes=(400, 404))
 
 
 def get_batch_results(
-    submission_ids: list[int], 
+    submission_ids: list[int],
     request_timeout: int = 240,  # Further increased timeout for batch operations
-    backend_base_url: str | None = None
+    backend_base_url: str | None = None,
 ) -> list[dict]:
     """Retrieve the sandbox results for a batch of submission IDs."""
     url = backend_base_url if backend_base_url else get_backend_url()
@@ -935,13 +981,8 @@ def get_batch_results(
     return response["results"]
 
 
-def cancel_submission(
-    submission_id: str, 
-    request_timeout: int = 120,
-    backend_base_url: str | None = None
-) -> dict:
+def cancel_submission(submission_id: str, request_timeout: int = 120, backend_base_url: str | None = None) -> dict:
     """Cancel a submission that is currently waiting to be processed."""
     url = backend_base_url if backend_base_url else get_backend_url()
     endpoint = f"cancel/{submission_id}"
-    return _make_api_request("post", endpoint, url, request_timeout=request_timeout, 
-                           client_error_codes=(400, 404))
+    return _make_api_request("post", endpoint, url, request_timeout=request_timeout, client_error_codes=(400, 404))

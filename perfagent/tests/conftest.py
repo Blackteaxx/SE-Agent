@@ -59,16 +59,11 @@ if __name__ == "__main__":
 @pytest.fixture
 def fake_llm():
     """提供一个假的 LLM 客户端，避免测试依赖真实接口。"""
+
     class FakeLLM:
         def call_llm(self, messages, temperature: float = 0.3, max_tokens=None) -> str:
             # 返回一个通用的 SEARCH/REPLACE 区块；若无法匹配则代码不变化
-            return (
-                "<<<<<<< SEARCH\n"
-                "old code snippet\n"
-                "=======\n"
-                "new code snippet\n"
-                ">>>>>>> REPLACE"
-            )
+            return "<<<<<<< SEARCH\nold code snippet\n=======\nnew code snippet\n>>>>>>> REPLACE"
 
     return FakeLLM()
 

@@ -5,14 +5,13 @@
 """
 
 import json
-import logging
 import math
 import os
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .utils.log import get_se_logger
 
@@ -25,14 +24,14 @@ class OptimizationStep:
     timestamp: str
     action: str  # initial_evaluation, generate_optimization
     # 新增：多轮对话相关与融合后的字段
-    query: Optional[str] = None
-    response: Optional[str] = None
-    thought: Optional[str] = None
-    code_snapshot: Optional[str] = None
-    code_changed: Optional[bool] = None
-    diff: Optional[str] = None
-    performance_metrics: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
+    query: str | None = None
+    response: str | None = None
+    thought: str | None = None
+    code_snapshot: str | None = None
+    code_changed: bool | None = None
+    diff: str | None = None
+    performance_metrics: dict[str, Any] | None = None
+    error: str | None = None
     execution_time: float = 0.0
 
 
@@ -42,14 +41,14 @@ class TrajectoryMetadata:
 
     instance_id: str
     start_time: str
-    language: Optional[str] = None
-    optimization_target: Optional[str] = None
-    end_time: Optional[str] = None
+    language: str | None = None
+    optimization_target: str | None = None
+    end_time: str | None = None
     total_iterations: int = 0
     success: bool = False
-    final_performance: Optional[Dict[str, Any]] = None
-    error_message: Optional[str] = None
-    final_best_code: Optional[str] = None
+    final_performance: dict[str, Any] | None = None
+    error_message: str | None = None
+    final_best_code: str | None = None
 
 
 class TrajectoryLogger:
@@ -59,7 +58,7 @@ class TrajectoryLogger:
         self,
         instance_id: str,
         trajectory_dir: str = "./trajectories",
-        log_dir: Optional[Path] = None,
+        log_dir: Path | None = None,
     ):
         """初始化轨迹记录器
 
@@ -67,8 +66,8 @@ class TrajectoryLogger:
         - 若未提供 log_dir，则退回到 `trajectory_dir/{instance_id}.log` 以保持兼容
         """
         self.metadata = TrajectoryMetadata(instance_id=instance_id, start_time=datetime.now().isoformat())
-        self.steps: List[OptimizationStep] = []
-        self.history: List[Dict[str, Any]] = []
+        self.steps: list[OptimizationStep] = []
+        self.history: list[dict[str, Any]] = []
         self.trajectory_dir = trajectory_dir
 
         # 确保目录存在
@@ -85,14 +84,14 @@ class TrajectoryLogger:
         traj_logger_name = f"perfagent.trajectory.{instance_id}"
         self.logger = get_se_logger(traj_logger_name, log_file, also_stream=False)
 
-    def add_history(self, role: str, content: str, message_type: str, agent: Optional[str] = None) -> None:
+    def add_history(self, role: str, content: str, message_type: str, agent: str | None = None) -> None:
         """记录对话历史（multi-turn chat）"""
-        entry: Dict[str, Any] = {"role": role, "content": content, "message_type": message_type}
+        entry: dict[str, Any] = {"role": role, "content": content, "message_type": message_type}
         if agent:
             entry["agent"] = agent
         self.history.append(entry)
 
-    def start_step(self, action: str, query: Optional[str] = None, code_snapshot: Optional[str] = None) -> str:
+    def start_step(self, action: str, query: str | None = None, code_snapshot: str | None = None) -> str:
         """开始一个新的优化步骤"""
         step_id = f"step_{len(self.steps) + 1}"
         timestamp = datetime.now().isoformat()
@@ -114,14 +113,14 @@ class TrajectoryLogger:
     def end_step(
         self,
         step_id: str,
-        response: Optional[str] = None,
-        thought: Optional[str] = None,
-        code_changed: Optional[bool] = None,
-        diff: Optional[str] = None,
-        performance_metrics: Optional[Dict[str, Any]] = None,
-        error: Optional[str] = None,
-        code_snapshot: Optional[str] = None,
-        summary: Optional[str] = None,
+        response: str | None = None,
+        thought: str | None = None,
+        code_changed: bool | None = None,
+        diff: str | None = None,
+        performance_metrics: dict[str, Any] | None = None,
+        error: str | None = None,
+        code_snapshot: str | None = None,
+        summary: str | None = None,
     ) -> None:
         """结束当前步骤并记录结果"""
         # 找到对应的步骤
@@ -162,7 +161,7 @@ class TrajectoryLogger:
         # 实时保存轨迹
         self.save_trajectory()
 
-    def log_performance_evaluation(self, step_id: int, performance_data: Dict[str, Any]) -> None:
+    def log_performance_evaluation(self, step_id: int, performance_data: dict[str, Any]) -> None:
         """记录性能评估结果"""
         if step_id <= 0 or step_id > len(self.steps):
             return
@@ -175,9 +174,9 @@ class TrajectoryLogger:
     def finalize(
         self,
         success: bool = True,
-        final_performance: Optional[Dict[str, Any]] = None,
-        error_message: Optional[str] = None,
-        final_submission_code: Optional[str] = None,
+        final_performance: dict[str, Any] | None = None,
+        error_message: str | None = None,
+        final_submission_code: str | None = None,
     ) -> str:
         """完成轨迹记录"""
         self.metadata.end_time = datetime.now().isoformat()
@@ -227,6 +226,7 @@ class TrajectoryLogger:
 
                     # datetime
                     from datetime import datetime as _dt
+
                     if isinstance(obj, _dt):
                         return obj.isoformat()
 
@@ -284,7 +284,7 @@ class TrajectoryLogger:
             self.logger.error(f"保存轨迹文件失败: {e}")
             raise
 
-    def get_trajectory_summary(self) -> Dict[str, Any]:
+    def get_trajectory_summary(self) -> dict[str, Any]:
         """获取轨迹摘要"""
         successful_steps = [step for step in self.steps if not step.error]
         failed_steps = [step for step in self.steps if step.error]
@@ -326,7 +326,7 @@ class TrajectoryLogger:
     @classmethod
     def load_trajectory(cls, trajectory_file: Path) -> "TrajectoryLogger":
         """从文件加载轨迹（兼容旧版metadata/steps结构）"""
-        with open(trajectory_file, "r", encoding="utf-8") as f:
+        with open(trajectory_file, encoding="utf-8") as f:
             data = json.load(f)
 
         # 重建轨迹记录器
@@ -339,7 +339,7 @@ class TrajectoryLogger:
 
         # 恢复步骤（兼容旧版字段）
         steps_data = data.get("steps", [])
-        restored_steps: List[OptimizationStep] = []
+        restored_steps: list[OptimizationStep] = []
         for step_data in steps_data:
             # 旧版可能包含 input_data/output_data/duration 字段
             # 将其映射到新字段

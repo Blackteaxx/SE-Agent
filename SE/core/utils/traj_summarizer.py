@@ -5,7 +5,7 @@
 """
 
 import json
-from typing import Any, Dict, Optional
+from typing import Any
 
 from core.utils.se_logger import get_se_logger
 
@@ -83,7 +83,7 @@ Prediction Result (.patch/.pred file):
 Please provide your analysis in the JSON format specified in the system prompt."""
 
     def format_user_prompt(
-        self, trajectory_content: str, patch_content: str, problem_description: Optional[str] = None
+        self, trajectory_content: str, patch_content: str, problem_description: str | None = None
     ) -> str:
         """
         格式化用户提示词
@@ -103,7 +103,7 @@ Please provide your analysis in the JSON format specified in the system prompt."
             patch_content=patch_content,
         )
 
-    def parse_response(self, response_content: str) -> Dict[str, Any]:
+    def parse_response(self, response_content: str) -> dict[str, Any]:
         """
         将LLM响应字符串严格转换为JSON对象。
 
@@ -137,13 +137,13 @@ Please provide your analysis in the JSON format specified in the system prompt."
         # 未找到可解析的JSON片段
         raise ValueError("响应中未找到可解析的JSON内容")
 
-    def validate_response_format(self, response_data: Dict[str, Any]) -> bool:
+    def validate_response_format(self, response_data: dict[str, Any]) -> bool:
         """
         暂时禁用响应格式校验，统一返回 True。
         """
         return True
 
-    def create_fallback_summary(self, trajectory_content: str, patch_content: str, iteration: int) -> Dict[str, Any]:
+    def create_fallback_summary(self, trajectory_content: str, patch_content: str, iteration: int) -> dict[str, Any]:
         """
         创建备用总结（当LLM调用失败时使用）
 

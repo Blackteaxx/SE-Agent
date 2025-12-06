@@ -1,9 +1,9 @@
+import json
 import random
 import re
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Literal
-import json
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from swerex.deployment.config import (
@@ -400,10 +400,10 @@ class InstancesFromIdList(BaseModel, AbstractInstanceSource):
 
     path: Path
     """Path to the JSON file containing the list of instance IDs."""
-    
+
     key: str = "difference_ids"
     """Key in the JSON file that contains the list of instance IDs."""
-    
+
     subset: Literal["full", "verified", "lite", "multimodal", "multilingual"] = "verified"
     """Subset of swe-bench to use"""
 
@@ -454,28 +454,28 @@ class InstancesFromIdList(BaseModel, AbstractInstanceSource):
         # 确保文件路径是绝对路径
         path = Path(self.path).resolve()
         logger.info(f"Loading instance IDs from {path}")
-        
+
         # 加载JSON文件中的实例ID列表
         try:
             if not path.exists():
                 msg = f"JSON file not found: {path}"
                 logger.error(msg)
                 raise FileNotFoundError(msg)
-                
-            with open(path, 'r') as f:
+
+            with open(path) as f:
                 id_list_data = json.load(f)
-                
+
             if self.key not in id_list_data:
                 msg = f"Key '{self.key}' not found in JSON file {path}"
                 logger.error(msg)
                 raise ValueError(msg)
-                
+
             instance_ids = id_list_data[self.key]
             if not instance_ids:
                 msg = f"No instance IDs found in key '{self.key}' in JSON file {path}"
                 logger.error(msg)
                 raise ValueError(msg)
-                
+
             logger.info(f"Loaded {len(instance_ids)} instance IDs from {path}")
         except json.JSONDecodeError as e:
             msg = f"Invalid JSON format in {path}: {e}"
@@ -489,7 +489,7 @@ class InstancesFromIdList(BaseModel, AbstractInstanceSource):
         # 创建正则表达式来匹配指定的实例ID
         filter_regex = "|".join(instance_ids)
         logger.info(f"Created filter regex for {len(instance_ids)} instance IDs")
-        
+
         # 加载数据集
         dataset_path = self._get_dataset_path()
         logger.info(f"Loading dataset from {dataset_path}, split={self.split}")
@@ -505,22 +505,28 @@ class InstancesFromIdList(BaseModel, AbstractInstanceSource):
             SimpleBatchInstance.from_swe_bench(instance).to_full_batch_instance(self.deployment) for instance in ds
         ]
         logger.info(f"Created {len(all_instances)} instances")
-        
+
         # 过滤实例
-        logger.info(f"Filtering instances with regex: {filter_regex[:100]}..." if len(filter_regex) > 100 else f"Filtering instances with regex: {filter_regex}")
+        logger.info(
+            f"Filtering instances with regex: {filter_regex[:100]}..."
+            if len(filter_regex) > 100
+            else f"Filtering instances with regex: {filter_regex}"
+        )
         instances = _filter_batch_items(all_instances, filter_=filter_regex, shuffle=self.shuffle)
         logger.info(f"Found {len(instances)} matching instances")
-        
+
         # 检查是否找到了所有指定的实例
         found_ids = {instance.problem_statement.id for instance in instances}
         missing_ids = [id for id in instance_ids if id not in found_ids]
-        
+
         if missing_ids:
-            logger.warning(f"Could not find {len(missing_ids)} instance IDs: {', '.join(missing_ids[:5])}" + 
-                         (f"... and {len(missing_ids) - 5} more" if len(missing_ids) > 5 else ""))
+            logger.warning(
+                f"Could not find {len(missing_ids)} instance IDs: {', '.join(missing_ids[:5])}"
+                + (f"... and {len(missing_ids) - 5} more" if len(missing_ids) > 5 else "")
+            )
         else:
             logger.info("All specified instance IDs were found in the dataset")
-        
+
         return instances
 
     @property
@@ -529,5 +535,10 @@ class InstancesFromIdList(BaseModel, AbstractInstanceSource):
 
 
 BatchInstanceSourceConfig = (
-    InstancesFromHuggingFace | InstancesFromFile | SWEBenchInstances | ExpertInstancesFromFile | SWESmithInstances | InstancesFromIdList
+    InstancesFromHuggingFace
+    | InstancesFromFile
+    | SWEBenchInstances
+    | ExpertInstancesFromFile
+    | SWESmithInstances
+    | InstancesFromIdList
 )

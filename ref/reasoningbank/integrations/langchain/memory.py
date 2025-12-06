@@ -1,4 +1,5 @@
-from typing import Dict, Any, List
+from typing import Any
+
 from reasoningbank.core.bank import ReasoningBank
 
 
@@ -12,11 +13,11 @@ class ReasoningBankMemory:
         self.reasoning_bank = reasoning_bank
 
     @property
-    def memory_variables(self) -> List[str]:
+    def memory_variables(self) -> list[str]:
         """The list of memory variables."""
         return [self.memory_key]
 
-    def load_memory_variables(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+    def load_memory_variables(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """Load the memory variables."""
         import json
 
@@ -41,7 +42,7 @@ class ReasoningBankMemory:
 
         return {self.memory_key: formatted_memories}
 
-    def save_context(self, inputs: Dict[str, Any], outputs: Dict[str, str]) -> None:
+    def save_context(self, inputs: dict[str, Any], outputs: dict[str, str]) -> None:
         """Save the context of a chain run to the ReasoningBank."""
         query = next(iter(inputs.values()))
         trajectory = next(iter(outputs.values()))

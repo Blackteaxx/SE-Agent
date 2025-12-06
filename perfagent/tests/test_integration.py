@@ -11,7 +11,6 @@ import pytest
 
 from perfagent.agent import EffiBenchXInstance, PerfAgent
 from perfagent.config import LoggingConfig, ModelConfig, PerfAgentConfig
-from perfagent.run import main as run_main
 
 
 class TestIntegration:
@@ -94,7 +93,7 @@ if __name__ == "__main__":
         assert os.path.exists(trajectory_file)
 
         # 验证轨迹文件内容
-        with open(trajectory_file, "r", encoding="utf-8") as f:
+        with open(trajectory_file, encoding="utf-8") as f:
             trajectory_data = json.load(f)
 
         # 兼容当前实现的元数据键名（info 或 metadata）
@@ -250,7 +249,7 @@ if __name__ == "__main__":
         trajectory_file = result.get("trajectory_file")
         assert trajectory_file and os.path.exists(trajectory_file)
 
-        with open(trajectory_file, "r", encoding="utf-8") as f:
+        with open(trajectory_file, encoding="utf-8") as f:
             traj = json.load(f)
 
         assert ("metadata" in traj) or ("info" in traj)

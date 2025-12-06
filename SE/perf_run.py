@@ -13,7 +13,6 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
@@ -27,7 +26,7 @@ from core.utils.traj_pool_manager import TrajPoolManager
 from core.utils.trajectory_processor import TrajectoryProcessor
 
 # 导入operator系统
-from operators import create_operator, list_operators
+from operators import create_operator
 
 
 def call_operator(operator_name, workspace_dir, current_iteration, se_config, logger):
@@ -74,7 +73,7 @@ def call_operator(operator_name, workspace_dir, current_iteration, se_config, lo
         return None
 
 
-def write_iteration_preds(base_dir: Path, logger) -> Optional[Path]:
+def write_iteration_preds(base_dir: Path, logger) -> Path | None:
     """
     聚合当前迭代各实例的结果，生成 preds.json。
 
@@ -93,7 +92,7 @@ def write_iteration_preds(base_dir: Path, logger) -> Optional[Path]:
             if not res_file.exists():
                 continue
             try:
-                with open(res_file, "r", encoding="utf-8") as f:
+                with open(res_file, encoding="utf-8") as f:
                     data = json.load(f)
             except Exception:
                 continue
@@ -126,7 +125,7 @@ def write_iteration_preds(base_dir: Path, logger) -> Optional[Path]:
         return None
 
 
-def aggregate_all_iterations_preds(root_output_dir: Path, logger) -> Optional[Path]:
+def aggregate_all_iterations_preds(root_output_dir: Path, logger) -> Path | None:
     """
     汇总所有 iteration_* 目录下的 preds.json，添加迭代号并写入运行根目录的 preds.json。
 
@@ -158,7 +157,7 @@ def aggregate_all_iterations_preds(root_output_dir: Path, logger) -> Optional[Pa
             if not preds_file.exists():
                 continue
             try:
-                with open(preds_file, "r", encoding="utf-8") as pf:
+                with open(preds_file, encoding="utf-8") as pf:
                     preds = json.load(pf)
             except Exception:
                 continue
@@ -185,7 +184,7 @@ def aggregate_all_iterations_preds(root_output_dir: Path, logger) -> Optional[Pa
         return None
 
 
-def write_final_json_from_preds(aggregated_preds_path: Path, root_output_dir: Path, logger) -> Optional[Path]:
+def write_final_json_from_preds(aggregated_preds_path: Path, root_output_dir: Path, logger) -> Path | None:
     """
     从运行根目录的 preds.json（汇总）选择每个实例 runtime 最小的解，写入 final.json。
 
@@ -195,7 +194,7 @@ def write_final_json_from_preds(aggregated_preds_path: Path, root_output_dir: Pa
     }
     """
     try:
-        with open(aggregated_preds_path, "r", encoding="utf-8") as f:
+        with open(aggregated_preds_path, encoding="utf-8") as f:
             aggregated = json.load(f)
     except Exception as e:
         logger.warning(f"读取汇总 preds.json 失败: {e}")
@@ -242,11 +241,11 @@ def write_final_json_from_preds(aggregated_preds_path: Path, root_output_dir: Pa
 
 
 def create_temp_perf_config(
-    base_config_path: Optional[str],
+    base_config_path: str | None,
     se_model_cfg: dict,
     logger,
-    extra_overrides: Optional[dict] = None,
-) -> Optional[Path]:
+    extra_overrides: dict | None = None,
+) -> Path | None:
     """基于基础配置生成一个临时 PerfAgent 配置文件，并按需覆盖字段。
 
     - 覆盖模型相关字段（来自 SE 主模型设置）
@@ -257,7 +256,7 @@ def create_temp_perf_config(
     try:
         perf_cfg = {}
         if base_config_path:
-            with open(base_config_path, "r", encoding="utf-8") as f:
+            with open(base_config_path, encoding="utf-8") as f:
                 perf_cfg = yaml.safe_load(f) or {}
 
         # 仅覆盖 PerfAgent 支持的模型字段
@@ -415,7 +414,7 @@ def main():
 
     try:
         # 读取 SE 配置文件
-        with open(args.config, "r", encoding="utf-8") as f:
+        with open(args.config, encoding="utf-8") as f:
             se_config = yaml.safe_load(f)
 
         # 生成 timestamp 并替换输出目录
@@ -452,7 +451,7 @@ def main():
         logger.info(f"轨迹池初始化: {traj_pool_path}")
         print(f"🏊 轨迹池: {traj_pool_path}")
 
-        print(f"\n📊 配置概览:")
+        print("\n📊 配置概览:")
         print(f"  基础配置: {se_config['base_config']}")
         print(f"  模型: {se_config['model']['name']}")
         print(f"  实例目录: {se_config['instances']['instances_dir']}")
@@ -495,7 +494,7 @@ def main():
                     print(f"⚠️  Operator {operator_name} 执行失败，继续执行但不使用增强")
                     logger.warning(f"Operator {operator_name} 执行失败，继续执行但不使用增强")
             else:
-                print(f"🔄 无算子处理")
+                print("🔄 无算子处理")
                 logger.debug(f"第{i}次迭代无算子处理")
 
             logger.debug(f"第{i}次PerfAgent迭代参数: {json.dumps(iteration_params, ensure_ascii=False)}")
@@ -570,7 +569,7 @@ def main():
 
         logger.info("所有PerfAgent迭代准备完成")
 
-        print(f"\n🎯 执行总结:")
+        print("\n🎯 执行总结:")
         print(f"  ✅ 解析{len(iterations)}个迭代配置")
         print(f"  ✅ 时间戳: {timestamp}")
         print(f"  ✅ 日志文件: {log_file}")
