@@ -25,6 +25,9 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent))
 
 # 导入 SE 核心模块
+from core.global_memory.utils.config import GlobalMemoryConfig
+from core.utils.global_memory_manager import GlobalMemoryManager
+from core.utils.llm_client import LLMClient
 from core.utils.local_memory_manager import LocalMemoryManager
 from core.utils.se_logger import get_se_logger, setup_se_logging
 from core.utils.traj_extractor import TrajExtractor
@@ -583,6 +586,25 @@ def _print_final_summary(se_config, timestamp, log_file, output_dir, traj_pool_m
     _log_token_usage(output_dir, logger)
 
 
+def _update_global_memory_bank(
+    se_config: SEPerfRunSEConfig,
+    output_dir: str,
+    traj_pool_manager: TrajPoolManager,
+    llm_client: LLMClient | None,
+    logger,
+):
+    try:
+        gmb = se_config.global_memory_bank
+        if gmb and gmb.enabled:
+            bank_cfg = GlobalMemoryConfig(enabled=True, embedding_model=gmb.embedding_model, memory=gmb.memory)
+            if not bank_cfg.memory.chroma.persist_path:
+                bank_cfg.memory.chroma.persist_path = str(Path(output_dir) / "global_memory_chroma")
+            gm = GlobalMemoryManager(llm_client=llm_client, bank_config=bank_cfg)
+            gm.update_from_pool(traj_pool_manager, k=3)
+    except Exception as e:
+        logger.warning(f"全局记忆更新失败: {e}")
+
+
 def _log_token_usage(output_dir, logger):
     """
     统计并记录 Token 使用情况
@@ -719,6 +741,16 @@ def main():
             prompt_config=se_cfg.prompt_config,
         )
         traj_pool_manager.initialize_pool()
+
+        # Global Memory Manager
+        global_memory = None
+        global_memory_config = se_cfg.global_memory_bank
+        if isinstance(global_memory_config, GlobalMemoryConfig) and global_memory_config.enabled:
+            try:
+                global_memory = GlobalMemoryManager(llm_client=llm_client, bank_config=global_memory_config)
+                logger.info("GlobalMemoryManager 已启用")
+            except Exception as e:
+                logger.warning(f"GlobalMemoryManager 初始化失败: {e}")
 
         # 4. 执行迭代策略（仅检测是否完成；未完成则清理并重新跑）
         iterations = se_cfg.strategy.iterations
@@ -924,6 +956,10 @@ def main():
                 )
 
             next_iteration_idx += 1
+
+        # Update global memory
+        if global_memory:
+            global_memory.update_from_pool(traj_pool_manager)
 
         # 5. 最终汇总
         _print_final_summary(se_cfg.to_dict(), timestamp, log_file, output_dir, traj_pool_manager, logger)

@@ -861,3 +861,89 @@ class TrajPoolManager:
         except Exception as e:
             self.logger.error(f"获取轨迹池统计失败: {e}")
             return {"total_trajectories": 0, "labels": []}
+
+    def _parse_perf(self, val: Any) -> float:
+        try:
+            if isinstance(val, (int, float)):
+                return float(val)
+            if isinstance(val, str):
+                s = val.strip().lower()
+                if s in ("inf", "+inf", "infinity", "+infinity", "nan"):
+                    return float("inf")
+                return float(s)
+            return float("inf")
+        except Exception:
+            return float("inf")
+
+    def extract_steps(self) -> list[dict[str, Any]]:
+        steps: list[dict[str, Any]] = []
+        pool_data = self.load_pool()
+        for inst_name, entry in pool_data.items():
+            if not isinstance(entry, dict):
+                continue
+            for key, val in entry.items():
+                if key == "problem" or not isinstance(val, dict):
+                    continue
+                opn = val.get("operator_name")
+                if opn is None or opn in ["filter_trajectories", "plan"]:
+                    continue
+                src_labels = val.get("source_entry_labels")
+                if not isinstance(src_labels, list) or not src_labels:
+                    continue
+
+                sources: list[tuple[str, dict, float]] = []
+                for sl in src_labels:
+                    sl_str = str(sl)
+                    src = self.get_trajectory(sl_str, instance_name=str(inst_name))
+                    if isinstance(src, dict):
+                        pm_prev = src.get("perf_metrics")
+                        perf_prev = self._parse_perf(
+                            (pm_prev or {}).get("performance") if isinstance(pm_prev, dict) else src.get("performance")
+                        )
+                        if math.isfinite(perf_prev):
+                            sources.append((sl_str, src, perf_prev))
+                pm_curr = val.get("perf_metrics")
+                perf_curr = self._parse_perf(
+                    (pm_curr or {}).get("performance") if isinstance(pm_curr, dict) else val.get("performance")
+                )
+                if not math.isfinite(perf_curr) or not sources:
+                    continue
+                best_src = min(sources, key=lambda t: t[2])
+                best_label_key, best_detail, perf_prev_best = best_src[0], best_src[1], best_src[2]
+                improved = perf_curr < min(t[2] for t in sources)
+                delta = perf_prev_best - perf_curr
+                pct = (
+                    (delta / perf_prev_best * 100.0) if perf_prev_best != 0 and math.isfinite(perf_prev_best) else None
+                )
+                prev_it = best_detail.get("iteration")
+                try:
+                    prev_iter = int(prev_it) if prev_it is not None else -1
+                except Exception:
+                    prev_iter = -1
+                curr_it = val.get("iteration")
+                try:
+                    curr_iter = int(curr_it) if curr_it is not None else -1
+                except Exception:
+                    curr_iter = -1
+                src_label_list = []
+                for sl, _, _ in sources:
+                    src_label_list.append(str(sl))
+                steps.append(
+                    {
+                        "instance_name": str(inst_name),
+                        "prev_label": str(best_detail.get("label") or best_label_key),
+                        "curr_label": str(val.get("label") or key),
+                        "prev_iter": int(prev_iter),
+                        "curr_iter": int(curr_iter),
+                        "perf_prev": perf_prev_best,
+                        "perf_curr": perf_curr,
+                        "delta": delta,
+                        "pct": pct,
+                        "prev_detail": best_detail,
+                        "curr_detail": val,
+                        "source_labels": src_label_list,
+                        "operator_name": str(opn) if opn is not None else None,
+                        "improved": bool(improved),
+                    }
+                )
+        return steps

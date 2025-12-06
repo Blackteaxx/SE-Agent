@@ -1,6 +1,13 @@
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from core.global_memory.utils.config import (
+    ChromaBackendConfig,
+    GlobalMemoryConfig,
+    MemoryConfig,
+    OpenAIEmbeddingConfig,
+)
+
 
 @dataclass
 class PerfRunCLIConfig:
@@ -115,6 +122,7 @@ class SEPerfRunSEConfig:
     prompt_config: dict[str, Any] = field(default_factory=dict)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     extras: dict[str, Any] = field(default_factory=dict)
+    global_memory_bank: GlobalMemoryConfig | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -129,6 +137,24 @@ class SEPerfRunSEConfig:
         }
         if self.local_memory is not None:
             out["local_memory"] = self.local_memory.to_dict()
+        if self.global_memory_bank is not None:
+            out["global_memory_bank"] = {
+                "enabled": bool(self.global_memory_bank.enabled),
+                "embedding_model": {
+                    "provider": self.global_memory_bank.embedding_model.provider,
+                    "api_base": self.global_memory_bank.embedding_model.api_base,
+                    "api_key": self.global_memory_bank.embedding_model.api_key,
+                    "model": self.global_memory_bank.embedding_model.model,
+                    "request_timeout": self.global_memory_bank.embedding_model.request_timeout,
+                },
+                "memory": {
+                    "backend": self.global_memory_bank.memory.backend,
+                    "chroma": {
+                        "collection_name": self.global_memory_bank.memory.chroma.collection_name,
+                        "persist_path": self.global_memory_bank.memory.chroma.persist_path,
+                    },
+                },
+            }
         out.update(self.extras)
         return out
 
@@ -162,8 +188,30 @@ class SEPerfRunSEConfig:
             "local_memory",
             "prompt_config",
             "strategy",
+            "global_memory_bank",
         }
         extras = {k: v for k, v in (d or {}).items() if k not in known}
+        gmb_dict = (d or {}).get("global_memory_bank") or None
+        gmb = None
+        if isinstance(gmb_dict, dict):
+            enabled_val = gmb_dict.get("enabled")
+            enabled = True if enabled_val is None else bool(enabled_val)
+            em_raw = gmb_dict.get("embedding_model") or {}
+            em_cfg = OpenAIEmbeddingConfig(
+                provider=str(em_raw.get("provider") or "openai"),
+                api_base=em_raw.get("api_base") or em_raw.get("base_url"),
+                api_key=em_raw.get("api_key"),
+                model=em_raw.get("model"),
+                request_timeout=em_raw.get("request_timeout"),
+            )
+            m_raw = gmb_dict.get("memory") or {}
+            c_raw = m_raw.get("chroma") or {}
+            chroma_cfg = ChromaBackendConfig(
+                collection_name=str(c_raw.get("collection_name") or "global_memory"),
+                persist_path=c_raw.get("persist_path"),
+            )
+            mem_cfg = MemoryConfig(backend=str(m_raw.get("backend") or "chroma"), chroma=chroma_cfg)
+            gmb = GlobalMemoryConfig(enabled=enabled, embedding_model=em_cfg, memory=mem_cfg)
         return SEPerfRunSEConfig(
             base_config=base_config,
             output_dir=output_dir,
@@ -175,4 +223,5 @@ class SEPerfRunSEConfig:
             prompt_config=prompt_config,
             strategy=strategy,
             extras=extras,
+            global_memory_bank=gmb,
         )

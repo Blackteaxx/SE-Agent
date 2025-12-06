@@ -148,21 +148,23 @@ class LocalMemoryManager:
         bank = memory.get("experience_library") or []
 
         lines: list[str] = []
-        lines.append("## Global Status")
+        lines.append("### Global Status")
         lines.append(f"- Generation: {gs.get('current_generation', 'N/A')}")
         lines.append(f"- Current Solution ID: {gs.get('current_solution_id', 'N/A')}")
         lines.append(f"- Best Solution ID: {gs.get('best_solution_id', 'N/A')}")
         lines.append("")
-        lines.append("## Strategy Board")
+        lines.append("### Strategy Board")
         for d in dirs:
             status = d.get("status", "Unknown")
             succ = d.get("success_count", 0)
             fail = d.get("failure_count", 0)
             lines.append(f"- [{status}] {d.get('direction', '')} (✓{succ} ✗{fail}) — {d.get('description', '')}")
         lines.append("")
-        lines.append("## Experience Library (Latest)")
+        lines.append("### Experience Library (Latest)")
         for item in bank:
+            lines.append(f"#### {item.get('type', '')} Experience: {item.get('title', '')} ")
             lines.append(f"- ({item.get('type', '')}) {item.get('title', '')} — {item.get('description', '')}")
+            lines.append(f"Content:\n {item.get('content', '')}")
         return "\n".join(lines)
 
     def _estimate_chars(self, memory: dict[str, Any]) -> int:
@@ -1099,7 +1101,7 @@ Output a SINGLE JSON object with the following keys:
 
 ```json
 {{
-            "thought_process": "Briefly explain how you compressed and merged the memory (max 2 sentences).",
+"thought_process": "Briefly explain how you compressed and merged the memory (max 2 sentences).",
 "direction_board": [
     {{
                 "direction": "Concise, unique strategy name.",
