@@ -586,25 +586,6 @@ def _print_final_summary(se_config, timestamp, log_file, output_dir, traj_pool_m
     _log_token_usage(output_dir, logger)
 
 
-def _update_global_memory_bank(
-    se_config: SEPerfRunSEConfig,
-    output_dir: str,
-    traj_pool_manager: TrajPoolManager,
-    llm_client: LLMClient | None,
-    logger,
-):
-    try:
-        gmb = se_config.global_memory_bank
-        if gmb and gmb.enabled:
-            bank_cfg = GlobalMemoryConfig(enabled=True, embedding_model=gmb.embedding_model, memory=gmb.memory)
-            if not bank_cfg.memory.chroma.persist_path:
-                bank_cfg.memory.chroma.persist_path = str(Path(output_dir) / "global_memory_chroma")
-            gm = GlobalMemoryManager(llm_client=llm_client, bank_config=bank_cfg)
-            gm.update_from_pool(traj_pool_manager, k=3)
-    except Exception as e:
-        logger.warning(f"全局记忆更新失败: {e}")
-
-
 def _log_token_usage(output_dir, logger):
     """
     统计并记录 Token 使用情况
