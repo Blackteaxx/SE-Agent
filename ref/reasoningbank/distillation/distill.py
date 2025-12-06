@@ -1,7 +1,7 @@
 """Distillation functions for processing agent trajectories."""
 
-from typing import List, Dict, Any
 import json
+from typing import Any
 
 # A placeholder for a generic LLM interface.
 # In a real implementation, this would be a more specific type,
@@ -38,9 +38,7 @@ def judge_trajectory(trajectory: str, query: str, llm: LLM) -> bool:
     return "success" in response.lower()
 
 
-def distill_trajectory(
-    trajectory: str, query: str, llm: LLM, is_success: bool
-) -> List[Dict]:
+def distill_trajectory(trajectory: str, query: str, llm: LLM, is_success: bool) -> list[dict]:
     """
     Distills a raw trajectory into a list of structured memory items.
 

@@ -7,10 +7,8 @@ Alternative Strategy Operator
 避免重复相同的错误方法。
 """
 
-import json
 import textwrap
-from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 from operators import TemplateOperator
 
@@ -26,7 +24,7 @@ class AlternativeStrategyOperator(TemplateOperator):
 
     # 统一由父类提供 _load_traj_pool，实现复用
 
-    def _get_latest_approach(self, approaches_data: Dict[str, Any]) -> str:
+    def _get_latest_approach(self, approaches_data: dict[str, Any]) -> str:
         """将最近一次尝试的嵌套 dict/list 数据通用格式化为可读文本。
 
         不依赖固定字段，保持原始键顺序，递归缩进显示；
@@ -200,7 +198,7 @@ class AlternativeStrategyOperator(TemplateOperator):
         return self._call_llm_api(prompt, system_prompt)
 
     def _generate_content(
-        self, instance_info: Dict[str, Any], problem_statement: str, trajectory_data: Dict[str, Any]
+        self, instance_info: dict[str, Any], problem_statement: str, trajectory_data: dict[str, Any]
     ) -> str:
         """生成替代策略内容"""
         instance_dir = instance_info["instance_dir"]

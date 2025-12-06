@@ -552,7 +552,11 @@ class DefaultAgent(AbstractAgent):
     def _append_history(self, item: dict[str, Any]) -> None:
         """Adds an item to the history."""
         # Only pass expected arguments to the hook
-        hook_args = {k: v for k, v in item.items() if k in ["role", "content", "agent", "message_type", "tool_calls", "tool_call_ids", "thought", "action"]}
+        hook_args = {
+            k: v
+            for k, v in item.items()
+            if k in ["role", "content", "agent", "message_type", "tool_calls", "tool_call_ids", "thought", "action"]
+        }
         self._chook.on_query_message_added(**hook_args)
         self.history.append(item)  # type: ignore
 
@@ -1029,9 +1033,7 @@ class DefaultAgent(AbstractAgent):
                 # Apply history revision hook before querying the model
                 instance_id = self._problem_statement.id if self._problem_statement else "unknown"
                 revised_history = self._chook.revise_history_before_query(
-                    messages=history, 
-                    trajectory=self.trajectory, 
-                    instance_id=instance_id
+                    messages=history, trajectory=self.trajectory, instance_id=instance_id
                 )
                 output = self.model.query(revised_history)  # type: ignore
             step.output = output["message"]

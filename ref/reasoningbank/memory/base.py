@@ -1,7 +1,6 @@
 """Abstract base classes and implementations for memory backends."""
 
 import abc
-from typing import List, Dict
 
 
 class MemoryBackend(abc.ABC):
@@ -14,7 +13,7 @@ class MemoryBackend(abc.ABC):
     """
 
     @abc.abstractmethod
-    def add(self, items: List[Dict]):
+    def add(self, items: list[dict]):
         """
         Adds a list of memory items to the backend.
 
@@ -25,7 +24,7 @@ class MemoryBackend(abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def query(self, query_embedding: List[float], k: int) -> List[Dict]:
+    def query(self, query_embedding: list[float], k: int) -> list[dict]:
         """
         Queries the backend for the k most similar items.
 

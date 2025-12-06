@@ -2,10 +2,11 @@
 轨迹记录器的 pytest 测试用例
 """
 
-import tempfile
 import json
 import os
+import tempfile
 from pathlib import Path
+
 import pytest
 
 from perfagent.trajectory import TrajectoryLogger
@@ -44,7 +45,7 @@ class TestTrajectoryLogger:
         assert os.path.exists(trajectory_file)
 
         # 验证文件内容
-        with open(trajectory_file, "r", encoding="utf-8") as f:
+        with open(trajectory_file, encoding="utf-8") as f:
             data = json.load(f)
 
         assert data["info"]["instance_id"] == "test_instance" or data["metadata"]["instance_id"] == "test_instance"

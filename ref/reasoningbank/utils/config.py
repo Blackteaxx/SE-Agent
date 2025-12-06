@@ -1,10 +1,11 @@
 """Configuration management for the ReasoningBank library."""
 
+from typing import Any
+
 import yaml
-from typing import Dict, Any
 
 
-def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
+def load_config(config_path: str = "config.yaml") -> dict[str, Any]:
     """
     Loads the configuration from a YAML file.
 
@@ -14,5 +15,5 @@ def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: A dictionary containing the configuration settings.
     """
-    with open(config_path, "r") as f:
+    with open(config_path) as f:
         return yaml.safe_load(f)

@@ -1,12 +1,11 @@
 import logging
 from pathlib import Path
-from typing import Optional
 
 
 def get_se_logger(
     name: str,
     file_path: str | Path,
-    emoji: Optional[str] = None,
+    emoji: str | None = None,
     level: int = logging.INFO,
     also_stream: bool = True,
 ) -> logging.Logger:
@@ -30,7 +29,7 @@ def get_se_logger(
         # If path handling fails, we still proceed; FileHandler may raise later
         pass
 
-    fmt = f"%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    fmt = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     if emoji:
         fmt = f"{emoji} " + fmt
     formatter = logging.Formatter(fmt)

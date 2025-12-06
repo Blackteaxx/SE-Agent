@@ -6,7 +6,6 @@ SE Operators Registry System
 提供算子的动态注册和获取功能，支持通过名称查找算子类。
 """
 
-from typing import Dict, Type, Optional
 from .base import BaseOperator
 
 
@@ -14,9 +13,9 @@ class OperatorRegistry:
     """算子注册表，管理所有可用的算子类"""
 
     def __init__(self):
-        self._operators: Dict[str, Type[BaseOperator]] = {}
+        self._operators: dict[str, type[BaseOperator]] = {}
 
-    def register(self, name: str, operator_class: Type[BaseOperator]) -> None:
+    def register(self, name: str, operator_class: type[BaseOperator]) -> None:
         """
         注册算子类
 
@@ -30,7 +29,7 @@ class OperatorRegistry:
         self._operators[name] = operator_class
         print(f"✅ 已注册算子: {name} -> {operator_class.__name__}")
 
-    def get(self, name: str) -> Optional[Type[BaseOperator]]:
+    def get(self, name: str) -> type[BaseOperator] | None:
         """
         获取算子类
 
@@ -42,7 +41,7 @@ class OperatorRegistry:
         """
         return self._operators.get(name)
 
-    def list_operators(self) -> Dict[str, str]:
+    def list_operators(self) -> dict[str, str]:
         """
         列出所有已注册的算子
 
@@ -51,7 +50,7 @@ class OperatorRegistry:
         """
         return {name: cls.__name__ for name, cls in self._operators.items()}
 
-    def create_operator(self, name: str, config: Dict) -> Optional[BaseOperator]:
+    def create_operator(self, name: str, config: dict) -> BaseOperator | None:
         """
         创建算子实例
 
@@ -78,7 +77,7 @@ class OperatorRegistry:
 _global_registry = OperatorRegistry()
 
 
-def register_operator(name: str, operator_class: Type[BaseOperator]) -> None:
+def register_operator(name: str, operator_class: type[BaseOperator]) -> None:
     """
     注册算子到全局注册表
 
@@ -89,7 +88,7 @@ def register_operator(name: str, operator_class: Type[BaseOperator]) -> None:
     _global_registry.register(name, operator_class)
 
 
-def get_operator_class(name: str) -> Optional[Type[BaseOperator]]:
+def get_operator_class(name: str) -> type[BaseOperator] | None:
     """
     从全局注册表获取算子类
 
@@ -102,7 +101,7 @@ def get_operator_class(name: str) -> Optional[Type[BaseOperator]]:
     return _global_registry.get(name)
 
 
-def create_operator(name: str, config: Dict) -> Optional[BaseOperator]:
+def create_operator(name: str, config: dict) -> BaseOperator | None:
     """
     从全局注册表创建算子实例
 
@@ -116,7 +115,7 @@ def create_operator(name: str, config: Dict) -> Optional[BaseOperator]:
     return _global_registry.create_operator(name, config)
 
 
-def list_operators() -> Dict[str, str]:
+def list_operators() -> dict[str, str]:
     """
     列出所有已注册的算子
 

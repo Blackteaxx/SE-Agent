@@ -1,15 +1,13 @@
-from typing import Dict, List
-
 import numpy as np
 import scipy.stats as st
 
 
 def analyze_samples(
-    samples: List[float],
+    samples: list[float],
     confidence: float = 0.95,
     trim_ratio: float = 0.05,
     iqr_k: float = 1.0,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """
     Analyzes a list of runtimes, filtering outliers using the IQR method.
 

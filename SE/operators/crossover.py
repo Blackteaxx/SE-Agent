@@ -8,43 +8,42 @@ Crossover Operator
 """
 
 import textwrap
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from operators import TemplateOperator
 
 
 class CrossoverOperator(TemplateOperator):
     """交叉算子，结合两条轨迹的特性生成新策略"""
-    
+
     def get_name(self) -> str:
         return "crossover"
-    
+
     def get_strategy_prefix(self) -> str:
         return "CROSSOVER STRATEGY"
-    
+
     # 轨迹池加载统一由父类实现 _load_traj_pool
-    
-    def _get_valid_iterations(self, approaches_data: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
+
+    def _get_valid_iterations(self, approaches_data: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
         """获取有效的迭代数据"""
         valid_iterations = []
-        
+
         for key, data in approaches_data.items():
             if key == "problem":
                 continue
-                
+
             if isinstance(data, dict) and key.isdigit():
                 # 检查是否有基本的策略信息
                 # if data.get('strategy') or data.get('modified_files') or data.get('key_changes'):
                 # 先全部加入，后续再筛选
                 valid_iterations.append((key, data))
-        
+
         # 按迭代号排序
         valid_iterations.sort(key=lambda x: int(x[0]))
-        
+
         return valid_iterations
-    
-    def _format_trajectory_data(self, iteration_key: str, data: Dict[str, Any]) -> str:
+
+    def _format_trajectory_data(self, iteration_key: str, data: dict[str, Any]) -> str:
         """格式化单条轨迹数据为通用的嵌套文本结构。
 
         - 保留字典的原始键顺序
@@ -58,7 +57,7 @@ class CrossoverOperator(TemplateOperator):
             prefix = "  " * indent
             # 字典：按原始顺序输出 key: value（或 key: 换行 + 子块）
             if isinstance(value, dict):
-                lines: List[str] = []
+                lines: list[str] = []
                 for k, v in value.items():
                     if v is None or v == "" or (isinstance(v, (list, dict)) and len(v) == 0):
                         continue
@@ -77,7 +76,7 @@ class CrossoverOperator(TemplateOperator):
                 return "\n".join(lines)
             # 列表：每个元素一行，以 - 前缀；复杂元素分行缩进
             if isinstance(value, list):
-                lines: List[str] = []
+                lines: list[str] = []
                 for item in value:
                     if item is None or item == "":
                         continue
@@ -96,11 +95,11 @@ class CrossoverOperator(TemplateOperator):
                                 child_prefix = "  " * (indent + 1)
                                 first = child_lines[0]
                                 if first.startswith(child_prefix):
-                                    first = first[len(child_prefix):]
+                                    first = first[len(child_prefix) :]
                                 lines.append(f"{prefix}- {first}")
                                 for cl in child_lines[1:]:
                                     if cl.startswith(child_prefix):
-                                        cl = cl[len(child_prefix):]
+                                        cl = cl[len(child_prefix) :]
                                     lines.append(f"{prefix}  {cl}")
                 return "\n".join(lines)
             # 字符串：多行使用块式缩进
@@ -115,22 +114,24 @@ class CrossoverOperator(TemplateOperator):
                 return f"{prefix}{value}"
             return f"{prefix}{str(value)}"
 
-        parts: List[str] = [f"ITERATION {iteration_key}:"]
+        parts: list[str] = [f"ITERATION {iteration_key}:"]
         body = _fmt(data, 0)
         if body:
             parts.append(body)
         return "\n".join(parts)
-    
-    def _generate_crossover_strategy(self, problem_statement: str, trajectory1_summary: str, trajectory2_summary: str) -> str:
+
+    def _generate_crossover_strategy(
+        self, problem_statement: str, trajectory1_summary: str, trajectory2_summary: str
+    ) -> str:
         """
         针对 PerfAgent 任务，生成一个“交叉”的混合优化策略。
         (V4 - 自包含描述，消除 T1/T2 代号)
-        
+
         Args:
             problem_statement: 问题的描述。
             trajectory1_summary: 第一个轨迹的总结。
             trajectory2_summary: 第二个轨迹的总结。
-        
+
         Returns:
             一个简短的、综合的混合策略字符串，不包含对原轨迹的直接引用。
         """
@@ -156,13 +157,13 @@ class CrossoverOperator(TemplateOperator):
         prompt = f"""Analyze these two trajectories and create a superior, self-contained hybrid strategy:
 
     PROBLEM:
-    {textwrap.indent(problem_statement, '  ')}
+    {textwrap.indent(problem_statement, "  ")}
 
     TRAJECTORY 1 SUMMARY:
-    {textwrap.indent(trajectory1_summary, '  ')}
+    {textwrap.indent(trajectory1_summary, "  ")}
 
     TRAJECTORY 2 SUMMARY:
-    {textwrap.indent(trajectory2_summary, '  ')}
+    {textwrap.indent(trajectory2_summary, "  ")}
 
     Create a crossover strategy that synthesizes the best components of both.
 
@@ -176,50 +177,49 @@ class CrossoverOperator(TemplateOperator):
     """
 
         return self._call_llm_api(prompt, system_prompt)
-    
-    def _generate_content(self, instance_info: Dict[str, Any], problem_statement: str, trajectory_data: Dict[str, Any]) -> str:
+
+    def _generate_content(
+        self, instance_info: dict[str, Any], problem_statement: str, trajectory_data: dict[str, Any]
+    ) -> str:
         """生成交叉策略内容"""
-        instance_name = instance_info['instance_name']
-        
+        instance_name = instance_info["instance_name"]
+
         # 加载轨迹池数据（从workspace_dir，通过instance_dir计算）
-        workspace_dir = instance_info['instance_dir'].parent.parent
+        workspace_dir = instance_info["instance_dir"].parent.parent
         approaches_data = self._load_traj_pool(workspace_dir, instance_name)
         if not approaches_data:
             self.logger.warning(f"跳过 {instance_name}: 无轨迹池数据")
             return ""
-        
+
         # 获取有效的迭代数据
         valid_iterations = self._get_valid_iterations(approaches_data)
-        
+
         if len(valid_iterations) < 2:
             self.logger.error(f"跳过 {instance_name}: 轨迹池有效条数不足 (需要>=2, 实际={len(valid_iterations)})")
             return ""
-        
+
         # 选择最近的两条轨迹进行交叉
         # 可以选择最后两条，或者选择效果最好的两条，这里选择最后两条
         iteration1_key, iteration1_data = valid_iterations[-2]
         iteration2_key, iteration2_data = valid_iterations[-1]
-        
+
         # 格式化轨迹数据
         trajectory1_formatted = self._format_trajectory_data(iteration1_key, iteration1_data)
         trajectory2_formatted = self._format_trajectory_data(iteration2_key, iteration2_data)
-        
+
         self.logger.info(f"分析 {instance_name}: 交叉迭代 {iteration1_key} 和 {iteration2_key}")
-        
+
         # 生成交叉策略
-        strategy = self._generate_crossover_strategy(
-            problem_statement, 
-            trajectory1_formatted, 
-            trajectory2_formatted
-        )
-        
+        strategy = self._generate_crossover_strategy(problem_statement, trajectory1_formatted, trajectory2_formatted)
+
         if not strategy:
             # 如果LLM调用失败，提供默认交叉策略
-            strategy = f"""Synthesize the most effective elements from both previous approaches. Start with the stronger analytical method from the first approach, then apply the more focused implementation technique from the second approach. Address the common limitations observed in both attempts by adding intermediate validation steps. This hybrid approach combines thorough analysis with targeted action, while incorporating safeguards against the pitfalls encountered in both previous attempts."""
-        
+            strategy = """Synthesize the most effective elements from both previous approaches. Start with the stronger analytical method from the first approach, then apply the more focused implementation technique from the second approach. Address the common limitations observed in both attempts by adding intermediate validation steps. This hybrid approach combines thorough analysis with targeted action, while incorporating safeguards against the pitfalls encountered in both previous attempts."""
+
         return strategy
 
 
 # 注册算子
 from operators import register_operator
+
 register_operator("crossover", CrossoverOperator)

@@ -351,11 +351,12 @@ class RunBatch:
         )
         agent.replay_config = single_run_replay_config  # type: ignore[attr-defined]
         agent.add_hook(SetStatusAgentHook(instance.problem_statement.id, self._progress_manager.update_instance_status))
-        
+
         # 如果提供了实例模板目录，添加SystemTemplateHook
         if self._instance_templates_dir is not None:
             try:
                 from sweagent.agent.hooks.system_template_hook import SystemTemplateHook
+
                 hook = SystemTemplateHook(instance.problem_statement.id, self._instance_templates_dir)
                 agent.add_hook(hook)
                 self.logger.info(f"已为实例 {instance.problem_statement.id} 添加SystemTemplateHook")
@@ -363,7 +364,7 @@ class RunBatch:
                 self.logger.warning(f"SystemTemplateHook不可用: {e}")
             except Exception as e:
                 self.logger.error(f"添加SystemTemplateHook时出错: {e}")
-        
+
         self._progress_manager.update_instance_status(instance.problem_statement.id, "Starting environment")
         instance.env.name = f"{instance.problem_statement.id}"
         env = SWEEnv.from_config(instance.env)

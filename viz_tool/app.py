@@ -1,6 +1,5 @@
 import json
 import os
-import re
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request

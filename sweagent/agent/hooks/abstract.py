@@ -31,14 +31,16 @@ class AbstractAgentHook:
 
     def on_setup_attempt(self): ...
 
-    def revise_history_before_query(self, *, messages: list[dict[str, str]], trajectory: Trajectory, instance_id: str) -> list[dict[str, str]]:
+    def revise_history_before_query(
+        self, *, messages: list[dict[str, str]], trajectory: Trajectory, instance_id: str
+    ) -> list[dict[str, str]]:
         """Revise conversation history before querying the model.
-        
+
         Args:
             messages: Current conversation history
             trajectory: Current trajectory
             instance_id: Instance identifier
-            
+
         Returns:
             Modified conversation history
         """
@@ -113,10 +115,14 @@ class CombinedAgentHook(AbstractAgentHook):
         for hook in self.hooks:
             hook.on_setup_attempt()
 
-    def revise_history_before_query(self, *, messages: list[dict[str, str]], trajectory: Trajectory, instance_id: str) -> list[dict[str, str]]:
+    def revise_history_before_query(
+        self, *, messages: list[dict[str, str]], trajectory: Trajectory, instance_id: str
+    ) -> list[dict[str, str]]:
         modified_messages = messages
         for hook in self.hooks:
-            modified_messages = hook.revise_history_before_query(messages=modified_messages, trajectory=trajectory, instance_id=instance_id)
+            modified_messages = hook.revise_history_before_query(
+                messages=modified_messages, trajectory=trajectory, instance_id=instance_id
+            )
         return modified_messages
 
     def on_model_query(self, *, messages: list[dict[str, str]], agent: str):

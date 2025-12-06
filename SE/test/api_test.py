@@ -1,5 +1,5 @@
-from openai import OpenAI
 import requests
+from openai import OpenAI
 
 """
 API测试脚本 - 已修复版本
@@ -32,9 +32,7 @@ try:
     print("\n尝试基本API请求...")
     chat_response = client.chat.completions.create(
         model="openai/deepseek-chat",
-        messages=[
-            {"role": "user", "content": "Who you are?"}
-        ],
+        messages=[{"role": "user", "content": "Who you are?"}],
         temperature=0.6,
     )
     print("响应成功!")

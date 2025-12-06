@@ -4,7 +4,7 @@ import argparse
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 
 def _read_text(path: Path) -> str:
@@ -14,23 +14,23 @@ def _read_text(path: Path) -> str:
         return ""
 
 
-def _read_json(path: Path) -> Dict[str, Any]:
+def _read_json(path: Path) -> dict[str, Any]:
     try:
         return json.loads(_read_text(path) or "{}")
     except Exception:
         return {}
 
 
-def _parse_runtime_from_result(result_json: Dict[str, Any]) -> Any:
+def _parse_runtime_from_result(result_json: dict[str, Any]) -> Any:
     try:
         return result_json.get("final_performance")
     except Exception:
         return None
 
 
-def _collect_instance_history(root: Path, task_name: str) -> Dict[str, Any]:
+def _collect_instance_history(root: Path, task_name: str) -> dict[str, Any]:
     instance_root = root / task_name
-    data: Dict[str, Any] = {"problem": "", "iteration": {}}
+    data: dict[str, Any] = {"problem": "", "iteration": {}}
 
     # problem: prefer per-instance .problem, fallback to trajectory pool or instance description in result
     problem_path = instance_root / f"{task_name}.problem"
@@ -45,7 +45,7 @@ def _collect_instance_history(root: Path, task_name: str) -> Dict[str, Any]:
                 break
 
     # iterations: collect pred code and runtime per iteration
-    entries: list[tuple[int, Dict[str, Any]]] = []
+    entries: list[tuple[int, dict[str, Any]]] = []
     for iter_dir in root.glob("iteration_*"):
         m = re.search(r"(\d+)$", iter_dir.name)
         if not m:
@@ -89,9 +89,9 @@ def _collect_instance_history(root: Path, task_name: str) -> Dict[str, Any]:
     return data
 
 
-def collect_folder(folder: str, task_name: str | None = None, output: str | None = None) -> Dict[str, Any]:
+def collect_folder(folder: str, task_name: str | None = None, output: str | None = None) -> dict[str, Any]:
     root = Path(folder)
-    result: Dict[str, Any] = {}
+    result: dict[str, Any] = {}
 
     if task_name:
         result[task_name] = _collect_instance_history(root, task_name)
@@ -115,9 +115,9 @@ def collect_folder(folder: str, task_name: str | None = None, output: str | None
     return result
 
 
-def collect_openevolve_archive(folder: str, output: str | None = None) -> Dict[str, Any]:
+def collect_openevolve_archive(folder: str, output: str | None = None) -> dict[str, Any]:
     root = Path(folder)
-    result: Dict[str, Any] = {}
+    result: dict[str, Any] = {}
     for checkpoints_dir in root.rglob("openevolve_output/run_*/checkpoints"):
         task_root = checkpoints_dir.parent.parent.parent
         task_name = task_root.name
@@ -136,7 +136,7 @@ def collect_openevolve_archive(folder: str, output: str | None = None) -> Dict[s
         programs_dir = last_checkpoint / "programs"
         if not programs_dir.exists():
             continue
-        iteration_map: Dict[str, Dict[str, Any]] = {}
+        iteration_map: dict[str, dict[str, Any]] = {}
         idx = 0
         for prog_file in sorted(programs_dir.glob("*.json")):
             prog_json = _read_json(prog_file)
@@ -152,7 +152,7 @@ def collect_openevolve_archive(folder: str, output: str | None = None) -> Dict[s
                 key = str(idx)
             iteration_map[key] = {"code": code, "runtime": runtime}
         sorted_items = sorted(((int(k), v) for k, v in iteration_map.items()), key=lambda x: x[0])
-        data: Dict[str, Any] = {"problem": "", "iteration": {str(k): v for k, v in sorted_items}}
+        data: dict[str, Any] = {"problem": "", "iteration": {str(k): v for k, v in sorted_items}}
         result[task_name] = data
     if output:
         Path(output).write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")

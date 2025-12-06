@@ -2,7 +2,6 @@
 PerfAgent 的 pytest 测试用例
 """
 
-import os
 import tempfile
 from pathlib import Path
 

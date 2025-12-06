@@ -1,9 +1,10 @@
 """JSON file memory backend."""
 
 import json
-from typing import List, Dict
+
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
+
 from .base import MemoryBackend
 
 
@@ -28,10 +29,10 @@ class JSONMemoryBackend(MemoryBackend):
         self.filepath = filepath
         self.data = self._load()
 
-    def _load(self) -> List[Dict]:
+    def _load(self) -> list[dict]:
         """Loads memories from the JSON file."""
         try:
-            with open(self.filepath, "r") as f:
+            with open(self.filepath) as f:
                 return json.load(f)
         except FileNotFoundError:
             return []
@@ -41,7 +42,7 @@ class JSONMemoryBackend(MemoryBackend):
         with open(self.filepath, "w") as f:
             json.dump(self.data, f, indent=4)
 
-    def add(self, items: List[Dict]):
+    def add(self, items: list[dict]):
         """
         Adds a list of memory items to the JSON file.
 
@@ -51,7 +52,7 @@ class JSONMemoryBackend(MemoryBackend):
         self.data.extend(items)
         self._save()
 
-    def query(self, query_embedding: List[float], k: int) -> List[Dict]:
+    def query(self, query_embedding: list[float], k: int) -> list[dict]:
         """
         Queries the JSON file for the k most similar items using cosine
         similarity.
