@@ -19,6 +19,7 @@
 
 import argparse
 import concurrent.futures
+import os
 import shutil
 import subprocess
 import sys
@@ -331,8 +332,17 @@ def main():
     def _cleanup_processes():
         """终止所有活跃的子进程。"""
         with active_processes_lock:
+            # 无论是否有记录的 active_processes，都尝试清理整个进程组
+            # 这可以捕获那些还没来得及加入 active_processes 列表的孙子进程
+            try:
+                # 给整个进程组发送 SIGTERM
+                os.killpg(0, signal.SIGTERM)
+            except Exception:
+                pass
+
             if not active_processes:
                 return
+
             print(f"\n正在终止 {len(active_processes)} 个活跃子进程...")
             for p in active_processes:
                 try:
@@ -361,6 +371,18 @@ def main():
     # 注册信号处理
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
+
+    # 创建一个进程组，以便能够一次性杀死所有子进程
+    # 注意：在某些环境中，os.setsid() 可能会改变进程组 ID，这在 shell 脚本或 CI 环境中可能会有副作用。
+    # 但对于交互式运行，这是确保彻底清理子进程的好方法。
+    # 为了避免影响主进程的信号处理，我们只在创建新进程组时这样做。
+    # 但这里我们是在主进程中运行，所以我们更倾向于在 _cleanup_processes 中处理。
+    # 不过，如果 instance_runner.py 被杀死，我们希望它的子进程也被杀死。
+    # 一个常见的做法是把当前进程设为进程组组长。
+    try:
+        os.setpgrp()
+    except Exception:
+        pass
 
     # 包装 subprocess.run 以便跟踪 Popen 对象
     def _run_process(cmd, cwd):

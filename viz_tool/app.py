@@ -8,7 +8,7 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 
 ROOT_DIR = os.environ.get(
     "VIZ_ROOT",
-    "/data/CodeEfficiency/SE-Agent/trajectories_perf/deepseek-v3.1",
+    "/workspace/CodeEfficiency/SE-Agent/trajectories_perf/deepseek-v3.1",
 )
 
 
