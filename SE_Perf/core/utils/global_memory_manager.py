@@ -220,12 +220,19 @@ class GlobalMemoryManager:
                     # retrieve_memories 返回 dict: {"documents": [[doc1, ...]], "metadatas": [[meta1, ...]], "ids": [[id1, ...]], "distances": [[dist1, ...]]}
                     ret = self.bank.retrieve_memories(query, k=k)
 
-                    if not ret or not ret.get("documents") or not ret.get("ids"):
+                    if not ret:
                         continue
 
-                    documents = ret.get("documents", [[]])[0]
-                    metadatas = ret.get("metadatas", [[]])[0]
-                    ids = ret.get("ids", [[]])[0]
+                    docs_raw = ret.get("documents") or []
+                    metas_raw = ret.get("metadatas") or []
+                    ids_raw = ret.get("ids") or []
+
+                    documents = docs_raw[0] if docs_raw and isinstance(docs_raw[0], list) else docs_raw
+                    metadatas = metas_raw[0] if metas_raw and isinstance(metas_raw[0], list) else metas_raw
+                    ids = ids_raw[0] if ids_raw and isinstance(ids_raw[0], list) else ids_raw
+
+                    if not isinstance(documents, list) or not isinstance(metadatas, list) or not isinstance(ids, list):
+                        continue
 
                     for i, doc_id in enumerate(ids):
                         if doc_id in seen_ids:
@@ -249,9 +256,6 @@ class GlobalMemoryManager:
             lines = []
             for i, item in enumerate(all_results, 1):
                 content = item["content"]
-                # 尝试解析 metadata 中的信息用于增强展示
-                meta = item.get("metadata", {})
-
                 lines.append(content.strip())
                 lines.append("")
 
@@ -556,39 +560,38 @@ Return ONLY the JSON object. Do not add any explanations outside of JSON.
 
         queries = []
         try:
-            if self.llm_client is None:
-                return ""
             last_error: str | None = None
-            for attempt in range(1, 4):
-                try:
-                    resp_text = self.llm_client.call_with_system_prompt(
-                        system_prompt=system_prompt,
-                        user_prompt=user_prompt,
-                        temperature=0.7,
-                        max_tokens=20000,
-                        usage_context="global_memory.generate_query",
-                    )
+            if self.llm_client is not None:
+                for attempt in range(1, 4):
                     try:
-                        resp_text = self.llm_client.clean_think_tags(resp_text)
-                    except Exception:
-                        pass
-                    parsed = self._parse_llm_json(resp_text)
-                    self._valid_query_response(parsed)
+                        resp_text = self.llm_client.call_with_system_prompt(
+                            system_prompt=system_prompt,
+                            user_prompt=user_prompt,
+                            temperature=0.7,
+                            max_tokens=20000,
+                            usage_context="global_memory.generate_query",
+                        )
+                        try:
+                            resp_text = self.llm_client.clean_think_tags(resp_text)
+                        except Exception:
+                            pass
+                        parsed = self._parse_llm_json(resp_text)
+                        self._valid_query_response(parsed)
 
-                    if isinstance(parsed, dict):
-                        qs = parsed.get("queries") or []
-                        if isinstance(qs, list):
-                            queries = [str(q) for q in qs if isinstance(q, str) and q.strip()]
+                        if isinstance(parsed, dict):
+                            qs = parsed.get("queries") or []
+                            if isinstance(qs, list):
+                                queries = [str(q) for q in qs if isinstance(q, str) and q.strip()]
 
-                    if queries:
-                        self.logger.info(f"LLM查询生成成功 (第{attempt}次)")
-                        break
-                except ValueError as e:
-                    last_error = "invalid_response_format"
-                    self.logger.warning(f"LLM查询生成解析失败: 响应格式错误或无有效JSON片段 (第{attempt}次): {e}")
-                except Exception as e:
-                    last_error = "llm_call_failed"
-                    self.logger.warning(f"LLM查询生成调用失败 (第{attempt}次): {e}")
+                        if queries:
+                            self.logger.info(f"LLM查询生成成功 (第{attempt}次)")
+                            break
+                    except ValueError as e:
+                        last_error = "invalid_response_format"
+                        self.logger.warning(f"LLM查询生成解析失败: 响应格式错误或无有效JSON片段 (第{attempt}次): {e}")
+                    except Exception as e:
+                        last_error = "llm_call_failed"
+                        self.logger.warning(f"LLM查询生成调用失败 (第{attempt}次): {e}")
 
             if last_error:
                 self.logger.error(f"LLM查询生成最终失败: {last_error}")
@@ -596,7 +599,7 @@ Return ONLY the JSON object. Do not add any explanations outside of JSON.
             return queries
 
         except Exception:
-            return ""
+            return []
 
     def _build_query_prompt(
         self,
