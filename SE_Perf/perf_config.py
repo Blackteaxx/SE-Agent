@@ -121,8 +121,8 @@ class SEPerfRunSEConfig:
     local_memory: LocalMemoryConfig | None = None
     prompt_config: dict[str, Any] = field(default_factory=dict)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
-    extras: dict[str, Any] = field(default_factory=dict)
     global_memory_bank: GlobalMemoryConfig | None = None
+    extras: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
