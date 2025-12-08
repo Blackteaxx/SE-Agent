@@ -7,10 +7,20 @@ import logging
 import os
 import threading
 import time
+import random
 from pathlib import Path
 from typing import Any
 
 from openai import OpenAI
+
+try:
+    from openai import APIError, RateLimitError, APITimeoutError, APIConnectionError, BadRequestError
+except Exception:
+    APIError = Exception
+    RateLimitError = Exception
+    APITimeoutError = Exception
+    APIConnectionError = Exception
+    BadRequestError = Exception
 
 from .utils.log import get_se_logger
 
@@ -23,6 +33,8 @@ class LLMClient:
         model_config: dict[str, Any],
         max_retries: int = 3,
         retry_delay: float = 1.5,
+        retry_backoff_factor: float = 2.0,
+        retry_jitter: float = 0.3,
         io_log_path: str | Path | None = None,
         log_inputs_outputs: bool = True,
         log_sanitize: bool = True,
@@ -54,6 +66,8 @@ class LLMClient:
         # 优先使用配置中的增强参数
         self.max_retries = int(model_config.get("max_retries", max_retries))
         self.retry_delay = float(model_config.get("retry_delay", retry_delay))
+        self.retry_backoff_factor = float(model_config.get("retry_backoff_factor", retry_backoff_factor))
+        self.retry_jitter = float(model_config.get("retry_jitter", retry_jitter))
         self.log_inputs_outputs = bool(model_config.get("log_inputs_outputs", log_inputs_outputs))
         self.log_sanitize = bool(model_config.get("log_sanitize", log_sanitize))
         self.request_timeout = float(model_config.get("request_timeout", request_timeout))
@@ -72,6 +86,25 @@ class LLMClient:
         )
 
         self.logger.info(f"初始化LLM客户端: {self.config['name']}")
+
+    def _is_retryable_error(self, e: Exception) -> bool:
+        if isinstance(e, (RateLimitError, APITimeoutError, APIConnectionError)):
+            return True
+        if isinstance(e, APIError):
+            status = getattr(e, "status_code", None) or getattr(e, "status", None)
+            if isinstance(status, int) and status in (408, 429, 500, 502, 503, 504):
+                return True
+        msg = str(e).lower()
+        if any(x in msg for x in ("rate limit", "timed out", "timeout", "temporarily unavailable", "connection")):
+            return True
+        if isinstance(e, BadRequestError):
+            return False
+        return False
+
+    def _compute_sleep(self, attempt_index: int) -> float:
+        base = self.retry_delay * (self.retry_backoff_factor ** max(0, attempt_index - 1))
+        jitter = random.uniform(0, self.retry_jitter)
+        return base + jitter
 
     def _format_content_for_log(self, content: str | None, indent: int = 2) -> str:
         """将文本内容格式化为多行日志，保留真实换行并缩进。
@@ -256,12 +289,11 @@ class LLMClient:
 
             except Exception as e:
                 last_err = e
-                self.logger.error(f"LLM调用失败: {e}; attempt={attempt + 1}/{self.max_retries}")
-                if self.log_inputs_outputs:
-                    self.logger.error(f"LLM 调用异常: {e}")
                 attempt += 1
-                if attempt < self.max_retries:
-                    time.sleep(self.retry_delay)
+                should_retry = attempt < self.max_retries and self._is_retryable_error(e)
+                self.logger.warning(f"LLM调用失败: {e}; attempt={attempt}/{self.max_retries}; retry={should_retry}")
+                if should_retry:
+                    time.sleep(self._compute_sleep(attempt))
                 else:
                     break
 

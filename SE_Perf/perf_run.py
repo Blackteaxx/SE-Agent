@@ -753,7 +753,24 @@ def main():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = se_cfg.output_dir.replace("{timestamp}", timestamp)
 
-        # 初始化日志
+        # 如果 final.json 存在，认为任务已完成（此时不清理目录）
+        if (Path(output_dir) / "final.json").exists():
+            log_file = setup_se_logging(output_dir)
+            logger = get_se_logger("perf_run", emoji="⚡")
+            print("🎉 检测到任务已完成，跳过执行")
+            logger.info("检测到任务已完成，直接结束")
+            _log_token_usage(output_dir, logger)
+            return
+
+        # 未完成：先清空输出目录，再初始化日志
+        try:
+            if Path(output_dir).exists():
+                shutil.rmtree(output_dir)
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            # 目录清理失败仍继续尝试运行，但记录警告
+            print(f"清空输出目录失败: {e}")
+
         log_file = setup_se_logging(output_dir)
         logger = get_se_logger("perf_run", emoji="⚡")
 
@@ -820,24 +837,10 @@ def main():
             except Exception as e:
                 logger.warning(f"GlobalMemoryManager 初始化失败: {e}")
 
-        # 4. 执行迭代策略（仅检测是否完成；未完成则清理并重新跑）
+        # 4. 执行迭代策略
         iterations = se_cfg.strategy.iterations
         logger.info(f"计划执行 {len(iterations)} 个迭代步骤")
-        # 如果 final.json 存在，认为任务已完成
-        if (Path(output_dir) / "final.json").exists():
-            print("🎉 检测到任务已完成，跳过执行")
-            logger.info("检测到任务已完成，直接结束")
-            _log_token_usage(output_dir, logger)
-            return
-
-        # 未完成：直接清空输出目录并从头开始
-        try:
-            if Path(output_dir).exists():
-                shutil.rmtree(output_dir)
-            Path(output_dir).mkdir(parents=True, exist_ok=True)
-            logger.info("已清空输出目录，准备从头开始执行")
-        except Exception as e:
-            logger.warning(f"清空输出目录失败: {e}")
+        logger.info("已清理并初始化输出目录，准备从头开始执行")
 
         next_iteration_idx = 1
 

@@ -9,9 +9,19 @@ import os
 import re
 import threading
 import time
+import random
 from typing import Any  # noqa: UP035
 
 from openai import OpenAI
+
+try:
+    from openai import APIError, RateLimitError, APITimeoutError, APIConnectionError, BadRequestError
+except Exception:
+    APIError = Exception
+    RateLimitError = Exception
+    APITimeoutError = Exception
+    APIConnectionError = Exception
+    BadRequestError = Exception
 
 from core.utils.se_logger import get_se_logger
 
@@ -41,8 +51,10 @@ class LLMClient:
 
         # 请求控制参数（带默认值）
         self.request_timeout: float = float(self.config.get("request_timeout", 600.0))
-        self.max_retries: int = int(self.config.get("max_retries", 3))
+        self.max_retries: int = int(self.config.get("max_retries", 10))
         self.retry_delay: float = float(self.config.get("retry_delay", 1.5))
+        self.retry_backoff_factor: float = float(self.config.get("retry_backoff_factor", 2.0))
+        self.retry_jitter: float = float(self.config.get("retry_jitter", 0.3))
 
         # 初始化OpenAI客户端，遵循api_test.py的工作模式，并设置超时
         self.client = OpenAI(
@@ -52,6 +64,25 @@ class LLMClient:
         )
 
         self.logger.info(f"初始化LLM客户端: {self.config['name']}")
+
+    def _is_retryable_error(self, e: Exception) -> bool:
+        if isinstance(e, (RateLimitError, APITimeoutError, APIConnectionError)):
+            return True
+        if isinstance(e, APIError):
+            status = getattr(e, "status_code", None) or getattr(e, "status", None)
+            if isinstance(status, int) and status in (408, 429, 500, 502, 503, 504):
+                return True
+        msg = str(e).lower()
+        if any(x in msg for x in ("rate limit", "timed out", "timeout", "temporarily unavailable", "connection")):
+            return True
+        if isinstance(e, BadRequestError):
+            return False
+        return False
+
+    def _compute_sleep(self, attempt_index: int) -> float:
+        base = self.retry_delay * (self.retry_backoff_factor ** max(0, attempt_index - 1))
+        jitter = random.uniform(0, self.retry_jitter)
+        return base + jitter
 
     def clean_think_tags(self, text: str) -> str:
         """移除 <think>...</think> 标签及其中内容，并去除首尾空白"""
@@ -183,9 +214,10 @@ class LLMClient:
             except Exception as e:
                 last_err = e
                 attempt += 1
-                self.logger.warning(f"LLM调用失败: {e}; attempt={attempt}/{self.max_retries}")
-                if attempt < self.max_retries:
-                    time.sleep(self.retry_delay)
+                should_retry = attempt < self.max_retries and self._is_retryable_error(e)
+                self.logger.warning(f"LLM调用失败: {e}; attempt={attempt}/{self.max_retries}; retry={should_retry}")
+                if should_retry:
+                    time.sleep(self._compute_sleep(attempt))
                 else:
                     break
 

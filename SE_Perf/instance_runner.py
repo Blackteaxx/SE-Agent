@@ -25,6 +25,7 @@ import subprocess
 import sys
 import signal
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -328,67 +329,68 @@ def main():
     # 准备一个全局列表来跟踪正在运行的子进程
     active_processes: list[subprocess.Popen] = []
     active_processes_lock = threading.Lock()
+    stop_event = threading.Event()
+    exec_ctx = {"executor": None, "futures": []}
 
     def _cleanup_processes():
-        """终止所有活跃的子进程。"""
         with active_processes_lock:
-            # 无论是否有记录的 active_processes，都尝试清理整个进程组
-            # 这可以捕获那些还没来得及加入 active_processes 列表的孙子进程
+            procs = list(active_processes)
+
+        if not procs:
+            return
+
+        print(f"\n正在终止 {len(procs)} 个活跃子进程...")
+        for p in procs:
             try:
-                # 给整个进程组发送 SIGTERM
-                os.killpg(0, signal.SIGTERM)
+                if p.poll() is None:
+                    try:
+                        os.killpg(p.pid, signal.SIGTERM)
+                    except Exception:
+                        pass
+                    try:
+                        p.terminate()
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
-            if not active_processes:
-                return
-
-            print(f"\n正在终止 {len(active_processes)} 个活跃子进程...")
-            for p in active_processes:
-                try:
-                    if p.poll() is None:  # 仅终止还在运行的进程
-                        p.terminate()
-                except Exception:
-                    pass
-            # 等待一小段时间让进程优雅退出
+        deadline = time.time() + 5
+        for p in procs:
             try:
-                for p in active_processes:
+                while p.poll() is None and time.time() < deadline:
+                    time.sleep(0.1)
+                if p.poll() is None:
                     try:
-                        p.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        p.kill()  # 强制杀死
+                        os.killpg(p.pid, signal.SIGKILL)
+                    except Exception:
+                        pass
+                    try:
+                        p.kill()
                     except Exception:
                         pass
             except Exception:
                 pass
 
     def _signal_handler(sig, frame):
-        """处理终止信号。"""
         print(f"\n接收到信号 {sig}，准备退出...")
+        stop_event.set()
+        # 尝试取消未开始的任务
+        try:
+            if exec_ctx["executor"] is not None:
+                exec_ctx["executor"].shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+        # 终止所有已启动的子进程
         _cleanup_processes()
-        sys.exit(1)
 
     # 注册信号处理
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
-    # 创建一个进程组，以便能够一次性杀死所有子进程
-    # 注意：在某些环境中，os.setsid() 可能会改变进程组 ID，这在 shell 脚本或 CI 环境中可能会有副作用。
-    # 但对于交互式运行，这是确保彻底清理子进程的好方法。
-    # 为了避免影响主进程的信号处理，我们只在创建新进程组时这样做。
-    # 但这里我们是在主进程中运行，所以我们更倾向于在 _cleanup_processes 中处理。
-    # 不过，如果 instance_runner.py 被杀死，我们希望它的子进程也被杀死。
-    # 一个常见的做法是把当前进程设为进程组组长。
-    try:
-        os.setpgrp()
-    except Exception:
-        pass
-
     # 包装 subprocess.run 以便跟踪 Popen 对象
     def _run_process(cmd, cwd):
         try:
-            # 使用 Popen 替代 subprocess.run 以便获取句柄
-            with subprocess.Popen(cmd, cwd=cwd, text=True) as proc:
+            with subprocess.Popen(cmd, cwd=cwd, text=True, start_new_session=True) as proc:
                 with active_processes_lock:
                     active_processes.append(proc)
 
@@ -409,28 +411,52 @@ def main():
             print(f"[DRY-RUN] {name}: {' '.join(cmd)}")
             successes += 1
     else:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as executor:
+        from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+
+        with ThreadPoolExecutor(max_workers=max_parallel) as executor:
+            exec_ctx["executor"] = executor
             future_map: dict[concurrent.futures.Future, str] = {}
             for name in names:
+                if stop_event.is_set():
+                    break
                 cfg_path = per_instance_cfg_paths[name]
                 cmd = _build_perf_cmd(cfg_path, args.mode, project_root)
-                # 改为调用 _run_process
                 fut = executor.submit(_run_process, cmd, cwd=str(project_root))
                 future_map[fut] = name
-            for fut in concurrent.futures.as_completed(future_map):
-                name = future_map[fut]
-                try:
-                    res = fut.result()
-                    rc = getattr(res, "returncode", None)
-                    if rc == 0:
-                        print(f"✅ 完成实例: {name}")
-                        successes += 1
-                    else:
-                        print(f"❌ 失败实例: {name}（返回码 {rc}）")
+                exec_ctx["futures"].append(fut)
+
+            remaining = set(future_map.keys())
+            while remaining:
+                if stop_event.is_set():
+                    break
+                done, not_done = wait(remaining, timeout=0.5, return_when=FIRST_COMPLETED)
+                for fut in done:
+                    name = future_map.get(fut, "unknown")
+                    try:
+                        res = fut.result()
+                        rc = getattr(res, "returncode", None)
+                        if rc == 0:
+                            print(f"✅ 完成实例: {name}")
+                            successes += 1
+                        else:
+                            print(f"❌ 失败实例: {name}（返回码 {rc}）")
+                            failures += 1
+                    except Exception as e:
+                        print(f"❌ 失败实例: {name}（异常 {e}）")
                         failures += 1
-                except Exception as e:
-                    print(f"❌ 失败实例: {name}（异常 {e}）")
-                    failures += 1
+                remaining = not_done
+
+            # 如果收到停止信号，尝试取消剩余任务
+            if stop_event.is_set():
+                for fut in remaining:
+                    try:
+                        fut.cancel()
+                    except Exception:
+                        pass
+                _cleanup_processes()
+                print("已终止运行，正在清理资源...")
+                # 终止流程后不再进行后续聚合与统计
+                return
 
     print(f"运行结束：成功 {successes}/{total}；失败 {failures}")
 
