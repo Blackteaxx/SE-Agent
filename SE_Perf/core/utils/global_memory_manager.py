@@ -711,6 +711,7 @@ Output Schema (STRICT JSON):
                         max_tokens=20000,
                         usage_context="global_memory.relevance_select",
                     )
+                    self.logger.debug(f"LLM原始响应 (筛选全局经验，第{attempt}次):\n{resp_text}")
                     try:
                         resp_text = self.llm_client.clean_think_tags(resp_text)
                     except Exception:
