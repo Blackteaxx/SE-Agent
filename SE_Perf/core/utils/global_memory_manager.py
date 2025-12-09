@@ -123,12 +123,13 @@ class GlobalMemoryManager:
             self.logger.warning(f"全局记忆更新失败: {e}")
             return 0
 
-    def retrieve(self, queries: list[str], k: int = 3) -> str:
-        """根据查询检索相关经验，并格式化返回。
+    def retrieve(self, queries: list[str], k: int = 3, context: dict[str, Any] | None = None) -> str:
+        """根据查询检索相关经验，并在检索后进行逐项相关性筛选，最终格式化返回。
 
         Args:
             queries (list[str]): 查询列表
             k (int, optional): 每个查询检索的数量. Defaults to 3.
+            context (dict[str, Any] | None, optional): 当前问题上下文，用于逐项筛选。
 
         Returns:
             str: 格式化后的检索结果字符串
@@ -174,13 +175,20 @@ class GlobalMemoryManager:
                     self.logger.warning(f"Query检索失败 '{query}': {e}")
                     continue
 
-            # 如果没有检索到结果，返回空字符串
             if not all_results:
                 return ""
 
-            # 格式化输出
+            filtered_results = all_results
+            try:
+                if context:
+                    filtered_results = self._select_relevant_memories(all_results, context)
+                    if not filtered_results:
+                        filtered_results = all_results
+            except Exception:
+                filtered_results = all_results
+
             lines = []
-            for i, item in enumerate(all_results, 1):
+            for i, item in enumerate(filtered_results, 1):
                 content = item["content"]
                 lines.append(content.strip())
                 lines.append("")
@@ -637,30 +645,31 @@ No markdown, no extra keys, ensure valid JSON.
             raise ValueError(msg)
         return True
 
-    def filter(self, memory_content: str, context: dict[str, Any]) -> str:
-        """根据上下文使用LLM筛选最相关的Global Memory内容"""
+    def _select_relevant_memories(self, items: list[dict[str, Any]], context: dict[str, Any]) -> list[dict[str, Any]]:
         try:
-            if not memory_content.strip():
-                return ""
-
-            # 如果没有LLM客户端，直接返回原始内容（或截断）
+            if not items:
+                return items
             if self.llm_client is None:
-                return memory_content
+                return items
 
             language = str(context.get("language") or "").strip()
             optimization_target = str(context.get("optimization_target") or "").strip()
             problem_description = str(context.get("problem_description") or "").strip()
-            additional_requirements = str(context.get("additional_requirements") or "").strip()
+
+            briefs: list[str] = []
+            for idx, it in enumerate(items, start=1):
+                txt = str(it.get("content") or "")
+                briefs.append(f"{idx}. {txt}")
 
             system_prompt = """
 You are an expert algorithm optimization assistant.
-Your goal is to filter retrieved "Global Memories" (past optimization experiences) and keep only those that are truly relevant and helpful for the current specific problem.
+Your goal is to filter a numbered list of retrieved "Global Memories" (past optimization experiences) and keep only those that are truly relevant and helpful for the current specific problem.
 
 You will be given:
 1. Current Problem Context (Language, Target, Description).
-2. A list of Retrieved Memories (content from past similar tasks).
+2. Retrieved Memories (content from past similar tasks).
 
-Your output must be a single JSON object containing the filtered memories.
+Your output must be a JSON object indicating which indices should be kept
 
 Filtering Criteria:
 - Relevance: Does the memory address a similar bottleneck or use a relevant technique for THIS problem?
@@ -673,67 +682,74 @@ Filtering Criteria:
 Output Schema (STRICT JSON):
 {
   "thought_process": "Brief explanation of why you selected these specific memories.",
-  "filtered_memories": "Filtered Global Memories"
+  "keep_indices": [<ints>]
 }
 """.strip()
 
-            user_parts = ["## Current Problem Context"]
+            user_parts: list[str] = []
+            user_parts.append("## Context")
             if language:
-                user_parts.append(f"- Language: {language}")
+                user_parts.append(f"Language: {language}")
             if optimization_target:
-                user_parts.append(f"- Optimization Target: {optimization_target}")
+                user_parts.append(f"Optimization Target: {optimization_target}")
             if problem_description:
-                user_parts.append(f"- Problem Description: {problem_description}")
+                user_parts.append(f"Problem: {problem_description}")
 
-            user_parts.append("\n## Retrieved Global Memories")
-            user_parts.append(memory_content)
-
+            user_parts.append("\n## Global Memories")
+            user_parts.extend(briefs)
             user_prompt = "\n".join(user_parts)
 
             last_error: str | None = None
-
+            parsed: dict | None = None
             for attempt in range(1, 4):
                 try:
                     resp_text = self.llm_client.call_with_system_prompt(
                         system_prompt=system_prompt,
                         user_prompt=user_prompt,
-                        temperature=0.7,  # 稍微降低温度以获得更稳定的筛选结果
+                        temperature=0.7,
                         max_tokens=20000,
-                        usage_context="global_memory.filter",
+                        usage_context="global_memory.relevance_select",
                     )
-
                     try:
                         resp_text = self.llm_client.clean_think_tags(resp_text)
                     except Exception:
                         pass
-
                     parsed = self._parse_llm_json(resp_text)
-
-                    if isinstance(parsed, dict):
-                        mems = parsed.get("filtered_memories")
-                        if isinstance(mems, str):
-                            # 成功获取，直接返回
-                            return mems
-                        else:
-                            msg = "filtered_memories必须为 String"
-                            raise ValueError(msg)
-                    else:
-                        msg = "响应无法解析为JSON对象"
-                        raise ValueError(msg)
-
+                    self._valid_filter_response(parsed)
+                    break
                 except ValueError as e:
                     last_error = "invalid_response_format"
-                    self.logger.warning(f"LLM记忆筛选解析失败 (第{attempt}次): {e}")
+                    self.logger.warning(f"LLM查询生成解析失败: 响应格式错误或无有效JSON片段 (第{attempt}次): {e}")
                 except Exception as e:
                     last_error = "llm_call_failed"
-                    self.logger.warning(f"LLM记忆筛选调用失败 (第{attempt}次): {e}")
+                    self.logger.warning(f"相关性选择调用失败 (第{attempt}次): {e}")
 
-            # 如果循环结束仍未返回，说明全部失败
-            if last_error:
-                self.logger.error(f"LLM记忆筛选最终失败: {last_error}, 回退到原始检索内容")
+            if not isinstance(parsed, dict):
+                if last_error:
+                    self.logger.error(f"相关性选择最终失败: {last_error}")
+                return items
 
-            return memory_content  # 失败回退
+            keep = parsed.get("keep_indices")
+            if not isinstance(keep, list):
+                return items
+            keep_set = {int(i) for i in keep if isinstance(i, (int, float, str)) and str(i).strip().isdigit()}
+            if not keep_set:
+                return items
+            filtered: list[dict[str, Any]] = []
+            for idx, it in enumerate(items, start=1):
+                if idx in keep_set:
+                    filtered.append(it)
+            return filtered
+        except Exception:
+            return items
 
-        except Exception as e:
-            self.logger.warning(f"Global Memory 筛选流程异常: {e}")
-            return memory_content
+    def _valid_filter_response(self, data: dict[str, Any]) -> bool:
+        """验证 Global Memory 检索查询响应是否符合预期格式"""
+        if not isinstance(data, dict):
+            msg = "响应数据必须为JSON对象"
+            raise ValueError(msg)
+        queries = data.get("keep_indices")
+        if not isinstance(queries, list):
+            msg = "keep_indices必须为列表"
+            raise ValueError(msg)
+        return True

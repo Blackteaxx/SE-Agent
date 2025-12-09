@@ -35,6 +35,7 @@ from core.utils.traj_pool_manager import TrajPoolManager
 from core.utils.trajectory_processor import TrajectoryProcessor
 from operators import create_operator
 from perf_config import LocalMemoryConfig, PerfRunCLIConfig, SEPerfRunSEConfig
+from perfagent.run import load_instance_data
 
 # --- 辅助函数 ---
 
@@ -531,19 +532,15 @@ def _inject_global_memory(
         except Exception:
             pass
 
-    # 加载实例描述（如果需要更精准的检索）
     instances_dir = Path(se_config.get("instances", {}).get("instances_dir", ""))
     instances_map = {}
     if instances_dir.exists():
         for fp in instances_dir.glob("*.json"):
             try:
-                with open(fp, encoding="utf-8") as f:
-                    idata = json.load(f)
-                    # 优先匹配 task_name, id
-                    key = idata.get("task_name") or idata.get("id")
-                    if key:
-                        desc = idata.get("description_md") or idata.get("description") or ""
-                        instances_map[str(key)] = desc
+                inst = load_instance_data(fp)
+                key = fp.stem
+                problem_text = inst.description_md or ""
+                instances_map[str(key)] = problem_text or ""
             except Exception:
                 pass
 
@@ -566,15 +563,12 @@ def _inject_global_memory(
             if not queries:
                 continue
 
-            # 2. 检索
-            mem_content = global_memory.retrieve(queries)
+            # 2. 检索并在检索阶段进行相关性筛选
+            mem_content = global_memory.retrieve(queries, context=context)
             if not mem_content:
                 continue
 
-            # 3. 筛选相关 memory
-            mem_content = global_memory.filter(mem_context, context)
-
-            # 4. 写入 YAML
+            # 3. 写入 YAML
             yaml_path = sys_prompt_dir / f"{inst_name}.yaml"
             data = {}
             if yaml_path.exists():
