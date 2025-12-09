@@ -181,9 +181,8 @@ class GlobalMemoryManager:
             filtered_results = all_results
             try:
                 if context:
-                    filtered_results = self._select_relevant_memories(all_results, context)
-                    if not filtered_results:
-                        filtered_results = all_results
+                    fr = self._select_relevant_memories(all_results, context)
+                    filtered_results = all_results if fr is all_results else fr
             except Exception:
                 filtered_results = all_results
 
@@ -734,7 +733,7 @@ Output Schema (STRICT JSON):
                 return items
             keep_set = {int(i) for i in keep if isinstance(i, (int, float, str)) and str(i).strip().isdigit()}
             if not keep_set:
-                return items
+                return []
             filtered: list[dict[str, Any]] = []
             for idx, it in enumerate(items, start=1):
                 if idx in keep_set:
