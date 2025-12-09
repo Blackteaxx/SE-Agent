@@ -571,7 +571,10 @@ def _inject_global_memory(
             if not mem_content:
                 continue
 
-            # 3. 写入 YAML
+            # 3. 筛选相关 memory
+            mem_content = global_memory.filter(mem_context, context)
+
+            # 4. 写入 YAML
             yaml_path = sys_prompt_dir / f"{inst_name}.yaml"
             data = {}
             if yaml_path.exists():

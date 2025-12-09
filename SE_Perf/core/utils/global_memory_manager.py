@@ -103,70 +103,6 @@ class GlobalMemoryManager:
             items_to_add: list[dict[str, Any]] = []
             sys_prompt, user_prompt = self._build_prompts(problem_description, top_improve, top_regress, best_entry)
             items_to_add = self._generate_experiences(sys_prompt, user_prompt)
-            if not items_to_add:
-                for s in top_improve:
-                    items_to_add.append(
-                        {
-                            "type": "Success",
-                            "title": f"Improved performance {s['prev_label']} -> {s['curr_label']}",
-                            "description": f"Iteration {s['curr_iter']} reduced runtime from {s['perf_prev']} to {s['perf_curr']}",
-                            "content": [
-                                f"Delta: {s['delta']:.4f}",
-                                ("Percent: " + f"{s['pct']:.1f}%") if isinstance(s["pct"], float) else "Percent: N/A",
-                                "Keep correctness-first, then micro-optimize.",
-                            ],
-                            "evidence": [
-                                {
-                                    "solution_id": s["curr_label"],
-                                    "code_change": "N/A",
-                                    "metrics_delta": self._fmt_metrics(s["perf_prev"], s["perf_curr"]),
-                                    "context": s["instance_name"],
-                                }
-                            ],
-                        }
-                    )
-
-                for s in top_regress:
-                    items_to_add.append(
-                        {
-                            "type": "Failure",
-                            "title": f"Performance regression {s['prev_label']} -> {s['curr_label']}",
-                            "description": f"Iteration {s['curr_iter']} increased runtime from {s['perf_prev']} to {s['perf_curr']}",
-                            "content": [
-                                f"Delta: {s['delta']:.4f}",
-                                ("Percent: " + f"{s['pct']:.1f}%") if isinstance(s["pct"], float) else "Percent: N/A",
-                                "Avoid premature micro-optimizations that hurt runtime.",
-                            ],
-                            "evidence": [
-                                {
-                                    "solution_id": s["curr_label"],
-                                    "code_change": "N/A",
-                                    "metrics_delta": self._fmt_metrics(s["perf_prev"], s["perf_curr"]),
-                                    "context": s["instance_name"],
-                                }
-                            ],
-                        }
-                    )
-
-            if not items_to_add and best_entry:
-                detail = best_entry.get("detail") or {}
-                txt = TrajPoolManager.format_entry({str(best_entry.get("label")): detail})
-                items_to_add.append(
-                    {
-                        "type": "Success",
-                        "title": f"Best solution {best_entry.get('label')}",
-                        "description": "Globally best-performing solution.",
-                        "content": [txt] if isinstance(txt, str) and txt.strip() else [],
-                        "evidence": [
-                            {
-                                "solution_id": str(best_entry.get("label")),
-                                "code_change": "N/A",
-                                "metrics_delta": f"Best runtime: {best_entry.get('performance')}",
-                                "context": str(best_entry.get("instance_name")),
-                            }
-                        ],
-                    }
-                )
 
             added = 0
             try:
@@ -175,16 +111,6 @@ class GlobalMemoryManager:
                         try:
                             doc = self._render_experience_markdown(item, instance_name)
                             meta = copy.deepcopy(item)
-                            # 扁平化处理 evidence 列表
-                            evidence_list = meta.pop("evidence", [])
-                            if evidence_list and isinstance(evidence_list, list):
-                                meta["evidence_json"] = json.dumps(evidence_list, ensure_ascii=False)
-
-                            # 扁平化处理 content 列表
-                            content_list = meta.pop("content", [])
-                            if content_list and isinstance(content_list, list):
-                                meta["content_json"] = json.dumps(content_list, ensure_ascii=False)
-
                             meta["instance_name"] = instance_name
                             self.bank.add_experience(doc, meta)
                             added += 1
@@ -288,6 +214,100 @@ class GlobalMemoryManager:
         best_entry: dict[str, Any] | None,
     ) -> tuple[str, str]:
         # ---- System Prompt：强调对比、抽象、限量、JSON schema ---- #
+        # sys_prompt = """
+        # You are an expert experience extractor for algorithm optimization.
+
+        # You will be given multiple optimization steps for the SAME problem:
+        # - Some steps lead to **Improvement** (better metrics).
+        # - Some steps lead to **Regression** (worse metrics).
+        # - One step corresponds to the **Best Solution** so far.
+
+        # Each step contains:
+        # - A "Previous Solution" (code + perf_metrics)
+        # - A "Current Solution" (code + perf_metrics)
+
+        # Your goal is to build a EXPERIENCE LIBRARY that captures generalizable Success / Failure lessons that can be reused on future algorithmic optimization tasks.
+
+        # ## What you should focus on
+
+        # - Think in terms of **situation → change → effect**:
+        #   - What kind of problem / pattern was the step handling?
+        #   - What strategy or code-level change was applied?
+        #   - How did the metrics change (better or worse)? Why?
+        # - Use **contrastive reasoning**:
+        #   - Compare Improvement vs Regression steps and vs the Best Solution.
+        #   - Identify what consistently works and what consistently fails.
+        # - Focus on **strategy-level changes**, for example:
+        #   - Algorithm choice (e.g., replace O(N^2) nested loops with two pointers or binary search).
+        #   - Data structure choice (e.g., use hash map / heap / prefix sums).
+        #   - IO patterns (e.g., fast IO for Python).
+        #   - Performance patches (e.g., precomputation, caching, avoiding repeated allocations).
+        # - Ignore superficial changes:
+        #   - Variable renaming, formatting, comments, or tiny constant tweaks without clear impact.
+
+        # ## Generalization requirements
+
+        # - Abstract away from specific instance names, labels, or variable names.
+        # - Describe experiences so that they apply to a FAMILY of problems (e.g., "pair counting with constraints", "DP with large N", "graph traversal with many edges").
+        # - Merge overlapping ideas into a single, more general experience.
+        # - You may also record **anti-patterns** as Failure experiences when regressions reveal what should be avoided.
+
+        # ## Limits and selection
+
+        # - Output **at most 5–10 experiences** in total.
+        # - Prioritize experiences with:
+        #   - Clear and significant metric impact (large improvement or large regression).
+        #   - Clear and explainable strategy behind the change.
+        # - If some steps look noisy or ambiguous, you may skip them.
+
+        # ## Output format (STRICT)
+
+        # You MUST return a single JSON object with key `"experiences"` whose value is a list of items.
+
+        # Each item MUST have the following fields:
+
+        # - `"type"`: one of `"Success"` or `"Failure"`.
+        # - `"title"`: short, rule-like name for the experience (string).
+        # - `"description"`: one-sentence summary of the experience (string).
+        # - `"content"`: a **list of 1–5 short strings**, each describing a key aspect of:
+        #   - when this applies (or should be avoided),
+        #   - what change to make (or avoid),
+        #   - why it matters for correctness/performance,
+        #   - important caveats.
+        # - `"evidence"`: a **list** of JSON objects, each with:
+        #   - `"solution_id"`: string or empty string if unknown,
+        #   - `"context"`: short text describing the situation (problem type, constraints, language),
+        #   - `"metrics_delta"`: short text describing the metric change (e.g., "runtime 1200ms -> 150ms (-87.5%)").
+
+        # ### JSON example schema (only an example, do not copy literally):
+
+        # {
+        #   "thought_process": "Briefly explain how you compressed and merged the memory (max 2 sentences).",
+        #   "experiences": [
+        #     {
+        #       "type": "Success",
+        #       "title": "Two-pointer sweep on sorted array instead of nested loops",
+        #       "description": "When counting pairs under a monotone condition, use a single two-pointer sweep on a sorted array instead of O(N^2) loops.",
+        #       "content": [
+        #         "Applicable when the condition on indices or values is monotone, such as A[j] >= k * A[i].",
+        #         "Sort the array once, then move two pointers to maintain the valid window and count pairs.",
+        #         "This typically reduces time from O(N^2) to O(N log N) or O(N) depending on sorting.",
+        #         "Carefully handle boundary conditions when advancing the left pointer."
+        #       ],
+        #       "evidence": [
+        #         {
+        #           "solution_id": "Gen5_Sol_2",
+        #           "context": "Pair counting problem in Python with N up to 2e5 on a sorted array.",
+        #           "metrics_delta": "runtime 1.2s -> 0.15s (-87.5%)"
+        #         }
+        #       ]
+        #     }
+        #   ]
+        # }
+
+        # Return ONLY the JSON object. Do not add any explanations outside of JSON.
+        #     """.strip()
+
         sys_prompt = """
 You are an expert experience extractor for algorithm optimization.
 
@@ -300,87 +320,37 @@ Each step contains:
 - A "Previous Solution" (code + perf_metrics)
 - A "Current Solution" (code + perf_metrics)
 
-Your goal is to build a EXPERIENCE LIBRARY that captures generalizable Success / Failure lessons that can be reused on future algorithmic optimization tasks.
+## Guidelines
 
-## What you should focus on
+Your goal is to compare and contrast these trajectories to identifythe most useful and generalizable
+strategies as memory items.
 
-- Think in terms of **situation → change → effect**:
-  - What kind of problem / pattern was the step handling?
-  - What strategy or code-level change was applied?
-  - How did the metrics change (better or worse)? Why?
-- Use **contrastive reasoning**:
-  - Compare Improvement vs Regression steps and vs the Best Solution.
-  - Identify what consistently works and what consistently fails.
-- Focus on **strategy-level changes**, for example:
-  - Algorithm choice (e.g., replace O(N^2) nested loops with two pointers or binary search).
-  - Data structure choice (e.g., use hash map / heap / prefix sums).
-  - IO patterns (e.g., fast IO for Python).
-  - Performance patches (e.g., precomputation, caching, avoiding repeated allocations).
-- Ignore superficial changes:
-  - Variable renaming, formatting, comments, or tiny constant tweaks without clear impact.
+Use self-contrast reasoning:
+- Identify patterns and strategies that consistently led to success.
+- Identify mistakes or inefficiencies from failed trajectories and formulatestrategies
+- Prefer strategies that generalize beyond specific tasks
 
-## Generalization requirements
+## Important notes
 
-- Abstract away from specific instance names, labels, or variable names.
-- Describe experiences so that they apply to a FAMILY of problems (e.g., "pair counting with constraints", "DP with large N", "graph traversal with many edges").
-- Merge overlapping ideas into a single, more general experience.
-- You may also record **anti-patterns** as Failure experiences when regressions reveal what should be avoided.
+- Think first: Why did some steps succeed while others failed?
+- You can extract at most 5 memory items from all steps combined.
+- Do not repeat similar or overlapping items.
+- Do not mention specific websites, queries, or string contents —— focus on generalizable behaviors and reasoning patterns.
+- Make sure each memory item captures actionable and transferable insights.
 
-## Limits and selection
-
-- Output **at most 5–10 experiences** in total.
-- Prioritize experiences with:
-  - Clear and significant metric impact (large improvement or large regression).
-  - Clear and explainable strategy behind the change.
-- If some steps look noisy or ambiguous, you may skip them.
-
-## Output format (STRICT)
-
-You MUST return a single JSON object with key `"experiences"` whose value is a list of items.
-
-Each item MUST have the following fields:
-
-- `"type"`: one of `"Success"` or `"Failure"`.
-- `"title"`: short, rule-like name for the experience (string).
-- `"description"`: one-sentence summary of the experience (string).
-- `"content"`: a **list of 1–5 short strings**, each describing a key aspect of:
-  - when this applies (or should be avoided),
-  - what change to make (or avoid),
-  - why it matters for correctness/performance,
-  - important caveats.
-- `"evidence"`: a **list** of JSON objects, each with:
-  - `"solution_id"`: string or empty string if unknown,
-  - `"context"`: short text describing the situation (problem type, constraints, language),
-  - `"metrics_delta"`: short text describing the metric change (e.g., "runtime 1200ms -> 150ms (-87.5%)").
-
-### JSON example schema (only an example, do not copy literally):
-
+## Output Format
+Your output must strictly follow the JSON format shown below:
 {
   "thought_process": "Briefly explain how you compressed and merged the memory (max 2 sentences).",
   "experiences": [
     {
-      "type": "Success",
-      "title": "Two-pointer sweep on sorted array instead of nested loops",
-      "description": "When counting pairs under a monotone condition, use a single two-pointer sweep on a sorted array instead of O(N^2) loops.",
-      "content": [
-        "Applicable when the condition on indices or values is monotone, such as A[j] >= k * A[i].",
-        "Sort the array once, then move two pointers to maintain the valid window and count pairs.",
-        "This typically reduces time from O(N^2) to O(N log N) or O(N) depending on sorting.",
-        "Carefully handle boundary conditions when advancing the left pointer."
-      ],
-      "evidence": [
-        {
-          "solution_id": "Gen5_Sol_2",
-          "context": "Pair counting problem in Python with N up to 2e5 on a sorted array.",
-          "metrics_delta": "runtime 1.2s -> 0.15s (-87.5%)"
-        }
-      ]
+      "title": "The title of the memory item",
+      "description": "one sentence summary of the memory item",
+      "content": "1-5 sentences describing the insights learned to successfully accomplishing the task"
     }
   ]
 }
-
-Return ONLY the JSON object. Do not add any explanations outside of JSON.
-    """.strip()
+"""
 
         # ---- User Prompt：整理上下文，分区清晰 ---- #
         sections: list[str] = []
@@ -424,7 +394,6 @@ Return ONLY the JSON object. Do not add any explanations outside of JSON.
     Using the Improvement / Regression steps and the Best Solution above, extract at most 5–7 generalizable experiences.
     Remember to:
     - Focus on strategy-level changes and their metric impact.
-    - Use type in ["Success", "Failure"].
     - Follow the exact JSON schema described in the system prompt and return a single JSON object with key "experiences".
     """.strip()
 
@@ -458,18 +427,6 @@ Return ONLY the JSON object. Do not add any explanations outside of JSON.
             if not isinstance(item, dict):
                 msg = "experience项必须为对象"
                 raise ValueError(msg)
-            for k in ("type", "title", "description", "content", "evidence"):
-                if k not in item:
-                    msg = f"experiences项缺少键: {k}"
-                    raise ValueError(msg)
-            ev = item.get("evidence")
-            if not isinstance(ev, list):
-                msg = "evidence必须为列表"
-                raise ValueError(msg)
-            for e in ev:
-                if not isinstance(e, dict):
-                    msg = "evidence项必须为对象"
-                    raise ValueError(msg)
 
     def _generate_experiences(self, system_prompt: str, user_prompt: str) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
@@ -514,20 +471,18 @@ Return ONLY the JSON object. Do not add any explanations outside of JSON.
     def _render_experience_markdown(self, item: dict[str, Any], instance_name: str) -> str:
         lines: list[str] = []
 
-        typ = str(item.get("type") or "")
         title = str(item.get("title") or "")
         desc = str(item.get("description") or "")
 
-        lines.append(f"### {typ} Experience: {title} ")
+        lines.append(f"### Experience: {title} ")
         lines.append(f"- Instance: {instance_name}")
-        lines.append(f"- ({typ}) {title} — {desc}")
+        lines.append(f"- {title} — {desc}")
         cnt = item.get("content")
-        if isinstance(cnt, list) and cnt:
-            lines.append("")
-            lines.append("#### Content")
-            for c in cnt:
-                if isinstance(c, str) and c.strip():
-                    lines.append(f"- {c}")
+        lines.append("#### Content")
+        if isinstance(cnt, list):
+            lines.append("\n".join(str(c) for c in cnt))
+        else:
+            lines.append(str(cnt))
         return "\n".join(lines)
 
     def generate_queries(self, context: dict[str, Any]) -> list[str]:
@@ -681,3 +636,104 @@ No markdown, no extra keys, ensure valid JSON.
             msg = "queries必须为列表"
             raise ValueError(msg)
         return True
+
+    def filter(self, memory_content: str, context: dict[str, Any]) -> str:
+        """根据上下文使用LLM筛选最相关的Global Memory内容"""
+        try:
+            if not memory_content.strip():
+                return ""
+
+            # 如果没有LLM客户端，直接返回原始内容（或截断）
+            if self.llm_client is None:
+                return memory_content
+
+            language = str(context.get("language") or "").strip()
+            optimization_target = str(context.get("optimization_target") or "").strip()
+            problem_description = str(context.get("problem_description") or "").strip()
+            additional_requirements = str(context.get("additional_requirements") or "").strip()
+
+            system_prompt = """
+You are an expert algorithm optimization assistant.
+Your goal is to filter retrieved "Global Memories" (past optimization experiences) and keep only those that are truly relevant and helpful for the current specific problem.
+
+You will be given:
+1. Current Problem Context (Language, Target, Description).
+2. A list of Retrieved Memories (content from past similar tasks).
+
+Your output must be a single JSON object containing the filtered memories.
+
+Filtering Criteria:
+- Relevance: Does the memory address a similar bottleneck or use a relevant technique for THIS problem?
+- Actionability: Can the insight be applied to the current code?
+- Specificity: Prefer concrete advice over vague "optimize code" statements.
+- If a memory is irrelevant or misleading for the current context, discard it.
+- If multiple memories are very similar, pick the most detailed one.
+- You can rephrase the memory content slightly to make it more concise and applicable to the current problem, but do not invent new facts.
+
+Output Schema (STRICT JSON):
+{
+  "thought_process": "Brief explanation of why you selected these specific memories.",
+  "filtered_memories": "Filtered Global Memories"
+}
+""".strip()
+
+            user_parts = ["## Current Problem Context"]
+            if language:
+                user_parts.append(f"- Language: {language}")
+            if optimization_target:
+                user_parts.append(f"- Optimization Target: {optimization_target}")
+            if problem_description:
+                user_parts.append(f"- Problem Description: {problem_description}")
+
+            user_parts.append("\n## Retrieved Global Memories")
+            user_parts.append(memory_content)
+
+            user_prompt = "\n".join(user_parts)
+
+            last_error: str | None = None
+
+            for attempt in range(1, 4):
+                try:
+                    resp_text = self.llm_client.call_with_system_prompt(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        temperature=0.7,  # 稍微降低温度以获得更稳定的筛选结果
+                        max_tokens=20000,
+                        usage_context="global_memory.filter",
+                    )
+
+                    try:
+                        resp_text = self.llm_client.clean_think_tags(resp_text)
+                    except Exception:
+                        pass
+
+                    parsed = self._parse_llm_json(resp_text)
+
+                    if isinstance(parsed, dict):
+                        mems = parsed.get("filtered_memories")
+                        if isinstance(mems, str):
+                            # 成功获取，直接返回
+                            return mems
+                        else:
+                            msg = "filtered_memories必须为 String"
+                            raise ValueError(msg)
+                    else:
+                        msg = "响应无法解析为JSON对象"
+                        raise ValueError(msg)
+
+                except ValueError as e:
+                    last_error = "invalid_response_format"
+                    self.logger.warning(f"LLM记忆筛选解析失败 (第{attempt}次): {e}")
+                except Exception as e:
+                    last_error = "llm_call_failed"
+                    self.logger.warning(f"LLM记忆筛选调用失败 (第{attempt}次): {e}")
+
+            # 如果循环结束仍未返回，说明全部失败
+            if last_error:
+                self.logger.error(f"LLM记忆筛选最终失败: {last_error}, 回退到原始检索内容")
+
+            return memory_content  # 失败回退
+
+        except Exception as e:
+            self.logger.warning(f"Global Memory 筛选流程异常: {e}")
+            return memory_content
