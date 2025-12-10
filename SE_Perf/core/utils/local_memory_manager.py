@@ -853,22 +853,18 @@ Then you rewrite and merge items into a smaller, cleaner memory.
 - Treat `direction_board` as a set of strategy hypotheses.
 - **Merge semantically similar strategies** into a single, clearer direction:
   - Rewrite `direction` as a concise, unique strategy name.
-  - Rewrite `description` as 1–3 sentences explaining what it does and when it applies.
+  - Rewrite `description` as 2–6 sentences explaining what it does and when it applies.
 - **Aggregate counts and evidence**:
   - Sum `success_count` / `failure_count` from merged items (missing counts → 0).
   - Set `status` to "Success", "Failed", or "Neutral" based on the overall evidence
     (do not invent counts or outcomes).
-  - Merge their `evidence` lists and keep at most **3** representative evidence items
-    (larger deltas, diverse contexts, clear code changes).
 - **Prune low-value directions**:
   - Remove vague, noisy, or fully redundant strategies
     (e.g., pure measurement noise, “no change / OS jitter”).
   - Aim to keep at most **5–8** strong directions.
 
 Each direction item keeps the schema:
-- `direction`, `description`, `status`, `success_count`, `failure_count`, `evidence[]`
-where each `evidence` object keeps: `solution_id`, `code_change`, `metrics_delta`, `context`
-(and optionally `step_outcome` if present).
+- `direction`, `description`, `status`, `success_count`, `failure_count`(and optionally `step_outcome` if present).
 
 ### Experience Library (lesson-level)
 
@@ -880,7 +876,6 @@ where each `evidence` object keeps: `solution_id`, `code_change`, `metrics_delta
     - when it applies
     - why it works or fails
     - trade-offs / risks
-  - Merge their `evidence` and keep at most **3** representative items.
 - Set `type`:
   - "Success" → lesson clearly leads to better performance/correctness when applied properly.
   - "Failure" → mainly a warning/anti-pattern.
@@ -889,8 +884,7 @@ where each `evidence` object keeps: `solution_id`, `code_change`, `metrics_delta
   - Discard items that only reflect measurement noise, minor impacts, or are covered by more general experiences.
 
 Each experience item keeps the schema:
-- `type`, `title`, `description`, `content`, `evidence[]`
-where each `evidence` object keeps: `solution_id`, `code_change`, `metrics_delta`, `context`.
+- `type`, `title`, `description`, `content`
 
 ## Global Constraints
 
@@ -945,7 +939,6 @@ The current memory is too fragmented and may exceed the token limit.
 Please compress and consolidate the direction_board and experience_library above:
 
 - Merge duplicate or overlapping strategies and experiences.
-- Aggregate their evidence.
 - Recompute status/counts where appropriate.
 - Prune low-value or noisy entries.
 
