@@ -42,6 +42,15 @@ class LocalMemoryManager:
         "status": "Success",               // Success | Failed | Neutral | Untried
         "success_count": 2,
         "failure_count": 1,
+        "evidence": [
+            {
+            "solution_id": "Gen5_Sol_2",
+            "metrics_delta": "Runtime: 150ms -> 120ms (-20%).",
+            "code_change": "Replaced cin/cout with scanf/printf for all integer reads.",
+            "context": "C++ solution with N up to 2e5 where input reading dominated runtime.",
+            "step_outcome": "Success"
+            }
+        ]
         }
     ],
 
@@ -51,6 +60,14 @@ class LocalMemoryManager:
         "title": "Bitwise modulo for power-of-two MOD",
         "description": "When MOD is a power of two, using x & (MOD-1) is faster than x % MOD and is mathematically equivalent.",
         "content": "- Only apply when MOD = 2^k.\n- Replacing division-based modulo with bitwise AND removes expensive division operations in tight loops.\n- This can significantly improve performance in DP transitions or frequency counting loops.\n- Must avoid using this trick when MOD can change or is not guaranteed to be a power of two.",
+        "evidence": [
+            {
+            "solution_id": "Gen5_Sol_2",
+            "code_change": "Changed dp[i] % 1024 -> dp[i] & 1023 in the main DP loop.",
+            "metrics_delta": "Runtime: 150ms -> 120ms (-20%).",
+            "context": "Hot DP loop with fixed MOD=1024, N up to 1e5."
+            }
+        ]
         }
     ]
     }
@@ -382,24 +399,72 @@ You must output a single JSON object strictly adhering to this schema:
         current_solution_id,
     ) -> tuple[str, str]:
         # 1. System Prompt
-        system_prompt = """You are an expert Algorithm Optimization Specialist.
+        system_prompt = """You are an expert Algorithm Optimization Specialist. You have just observed an evolutionary step where an agent **attempted to optimize** a code solution and the **metrics show an improvement** (or at least not a clear regression).
 
-You will be given an optimization step on an algorithmic coding task: previous and current solutions, metrics, and existing directions. The agent attempted to optimize the code, and the metrics now show improvement or correctness.
+Your job is NOT to log every tiny change. Your job is to maintain:
+- a **high-level strategy board** (`direction_board`), and
+- an **experience library** (`experience_library`)
+that together guide future evolution.
 
-## Guidelines
+---
 
-You need to (1) decide whether this step is a true **Success** or actually **Neutral**, and (2) extract strategy-level insights as **direction items** and **memory items** to guide future steps.
+## Goal
 
-The goal of these items is to be **helpful and generalizable** for future similar optimization tasks, not to log every tiny code change.
+Given the previous and current solutions, you must:
 
-## Important notes
+1. Decide whether this step is truly a **Success**, or actually **Neutral** (e.g., noise, trivial refactor).
+2. If (and only if) there are **strategy-level changes**, extract up to 3 new:
+   - **Direction items**: reusable optimization strategies that can be tried again on other solutions.
+   - **Memory items**: distilled reasoning patterns that explain *why* certain strategies work.
 
-- First reflect on **why** this step is a **Success** or improvement over the previous step, then summarize the insights to guide future steps.
-- Only create directions/memories when there is a **strategy-level change** (e.g., algorithm/data-structure switch, major loop or memory-layout change, clear performance trick) that plausibly caused the improvement or correctness.
-- If there is **no meaningful strategy-level change**, or the improvement is within typical measurement noise (e.g., very small runtime difference), treat the step as **Neutral** and return **empty arrays**.
-- You may return **zero** new direction items and **zero** new memory items; do **not** force items for pure noise or “no change”.
-- You can extract **at most 3** direction items and **at most 3** memory items, and they must **not** be overlapping or redundant.
-- Focus on **generalizable insights**, not specific variable names, line numbers, or run IDs. Describe strategies such as “aggressive pruning without correctness proof” or “using recursion with unbounded depth”, and explain under what conditions they are risky.
+This memory is local to a single problem and will be shown to the model in later steps to encourage **diverse strategy exploration**, not to duplicate the same ideas.
+
+---
+
+## Definitions
+
+- **Strategy-level change**:
+  - Switching algorithms (e.g., brute force → two-pointer, BFS → Dijkstra, naive DP → optimized DP).
+  - Changing core data structures (e.g., vector → bitset, list → array, unordered_map → array-based counter).
+  - Applying a clear performance trick (e.g., fast I/O, precomputation, caching, reducing passes over the array).
+  - Changing memory layout or loop structure in a way that affects asymptotics or constant factors in a hotspot.
+
+- **Non-strategy changes (DO NOT create directions for these)**:
+  - Renaming variables, reformatting, reordering independent statements.
+  - Small cosmetic refactors that do not change complexity or memory access patterns.
+  - Pure measurement noise: identical code with slightly different runtimes.
+
+---
+
+## Very Important Rules
+
+1. **You may return ZERO new directions and ZERO new memories.**
+   - This is the correct behavior when no strategy-level change happened.
+
+2. **Do NOT create directions about measurement noise or “no change”.**
+   - The following are explicitly forbidden as directions:
+     - "No Change, OS Jitter"
+     - "Measurement noise"
+     - "Same code as previous solution"
+
+3. **Noise vs Success vs Neutral**:
+   - If the improvement is less than about 3% or within typical measurement jitter (e.g., < 0.05 seconds), and there is *no* meaningful strategy change, treat the step as **Neutral**.
+   - Only mark `"step_outcome": "Success"` when:
+     - There is a real metric improvement **and**
+     - You can tie it to a strategy-level code change.
+
+4. **Rich, semantic content**:
+   - `direction` should look like a clear strategy name that could appear on a “strategy board”.
+   - `description` should be 1–3 sentences explaining:
+     - what the strategy does,
+     - when to use it,
+     - and potential trade-offs or risks.
+   - `content` in memory items should contain 2–6 bullet points about conditions, mechanism, and risks.
+
+5. **Cardinality constraints**:
+   - At most 3 `new_direction_items`.
+   - At most 3 `new_memory_items`.
+   - Arrays can be empty (`[]`).
 
 ---
 
@@ -415,13 +480,18 @@ You will be given:
 6. **Best Solution**: The global best solution so far (for context).
 7. **Current Directions**: The current snapshot of the strategy board for this problem.
 
+Use the diffs between Source and Current solution to reason about what changed.
 
 ---
 
-## Output Format You must output a single JSON object **strictly** adhering to this schema:
-json
+## Output Format
+
+You must output a single JSON object **strictly** adhering to this schema:
+
+```json
 {
   "thought_process": "Briefly explain your reasoning here.",
+
   "new_direction_items": [
     {
       "direction": "High-level strategy name.",
@@ -429,6 +499,7 @@ json
       "status": "Success | Neutral",
     }
   ],
+
   "new_memory_items": [
     {
       "type": "Success | Neutral",
@@ -438,7 +509,12 @@ json
     }
   ]
 }
-        """.strip()
+```
+
+Notes:
+- If there is no meaningful strategy-level change, set "step_outcome": "Neutral" and both arrays to [].
+- Do not invent fake strategies just to fill the JSON.
+        """
         user_template = """
         
 ## Optimization Target
@@ -525,39 +601,75 @@ json
         current_solution_id,
     ) -> tuple[str, str]:
         # 1. System Prompt
-        system_prompt = """You are an expert Algorithm Optimization Specialist.
+        system_prompt = """You are an expert Algorithm Optimization Specialist. You have just observed an evolutionary step where an agent **attempted to optimize** a code solution and the **metrics show a regression or incorrectness**.
 
-You will be given an optimization step on an algorithmic coding task: previous and current solutions, metrics, and existing directions. The agent attempted to optimize the code, but the metrics now show regression or incorrectness.
+Your job is NOT to log every tiny change. Your job is to maintain:
+- a **high-level strategy board** (`direction_board`), and
+- an **experience library** (`experience_library`)
+that warn future steps about bad ideas.
 
-## Guidelines
+---
 
-You need to (1) decide whether this step is a true **Failure** or actually **Neutral**, and (2) extract strategy-level insights as **direction items** and **memory items** to guide future steps.
+## Goal
 
-The goal of these items is to be **helpful and generalizable** for future similar optimization tasks, not to log every tiny code change.
+Given the previous and current solutions, you must:
 
-## Important notes
+1. Decide whether this step is truly a **Failure**, or actually **Neutral** (e.g., noise, trivial refactor).
+2. If (and only if) there are **strategy-level changes that caused the regression**, extract up to 3 new:
+   - **Direction items**: strategies that should be marked as Failed or risky in the current context.
+   - **Memory items**: warnings or anti-patterns explaining *why* this approach failed and when to avoid it.
 
-- First reflect on **why** this step failed or did not meaningfully improve performance, then summarize the lessons or strategies to prevent similar failures in the future.
-- Only create directions/memories when there is a **strategy-level change** (e.g., algorithm/data-structure switch, major loop or memory-layout change, clear performance trick) that plausibly caused the regression.
-- If there is **no meaningful strategy-level change**, or the regression is within typical measurement noise (e.g., very small runtime difference), treat the step as **Neutral** and return **empty arrays**.
-- You may return **zero** new direction items and **zero** new memory items; do **not** force items for pure noise or “no change”.
-- You can extract **at most 3** direction items and **at most 3** memory items, and they must **not** be overlapping or redundant.
-- Focus on **generalizable insights**, not specific variable names, line numbers, or run IDs. Describe strategies such as “aggressive pruning without correctness proof” or “using recursion with unbounded depth”, and explain under what conditions they are risky.
+---
+
+## Definitions
+
+- **Strategy-level change**:
+  - Same as in the Success case: algorithm switch, data structure switch, clear performance trick, major loop or memory layout change.
+- **Non-strategy changes (DO NOT create directions for these)**:
+  - Formatting, renaming, minor refactors with no impact on complexity or memory access.
+  - Pure measurement noise with identical code.
+
+---
+
+## Very Important Rules
+
+1. **You may return ZERO new directions and ZERO new memories.**
+   - This is the correct behavior when no strategy-level change caused the regression.
+
+2. **Do NOT create directions about measurement noise or “no change”.**
+   - Explicitly forbidden directions:
+     - "No Change, OS Jitter"
+     - "Measurement noise"
+     - "Same code as previous solution"
+
+3. **Noise vs Failure vs Neutral**:
+   - If the regression is less than about 3% or within typical measurement jitter (e.g., < 0.05 seconds), and there is *no* meaningful strategy change, treat the step as **Neutral**.
+   - Only mark `"step_outcome": "Failure"` when:
+     - Runtime, memory, or correctness clearly got worse **and**
+     - You can tie it to a strategy-level change (e.g., added redundant checks, switched to a slower algorithm, broke edge cases).
+
+4. **Rich, semantic content**:
+   - Directions should describe *what strategy went wrong* (e.g., “aggressive pruning without correctness proof”, “using recursion with unbounded depth”).
+   - Memory items should explain *why* the strategy failed and **under what conditions** it is dangerous.
+
+5. **Cardinality constraints**:
+   - At most 3 `new_direction_items`.
+   - At most 3 `new_memory_items`.
+   - Arrays can be empty (`[]`).
 
 ---
 
 ## Input Data Provided
 
-You will be given:
+Same as in the Success case:
 
-1. **Optimization Target**: e.g., runtime, memory, integral.
-2. **Language**: e.g., C++, Python.
-3. **Problem Description**: The algorithmic problem being solved.
-4. **Source Solutions**: Parent code(s), summaries and metrics before mutation.
-5. **Current Solution**: Mutated code, summary and metrics after mutation.
-6. **Best Solution**: The global best solution so far (for context).
-7. **Current Directions**: The current snapshot of the strategy board for this problem.
-
+1. **Optimization Target**
+2. **Language**
+3. **Problem Description**
+4. **Source Solutions**
+5. **Current Solution**
+6. **Best Solution**
+7. **Current Directions**
 
 ---
 
@@ -568,12 +680,21 @@ You must output a single JSON object **strictly** adhering to this schema:
 ```json
 {
   "thought_process": "Briefly explain your reasoning here (max 2 sentences).",
+  "step_outcome": "Failure | Neutral",
 
   "new_direction_items": [
     {
       "direction": "High-level description of the failed strategy.",
       "description": "1–3 sentences explaining what the strategy tried to do and why it is problematic in this context.",
-      "status": "Failed | Neutral"
+      "status": "Failed | Neutral",
+      "evidence": [
+        {
+          "solution_id": "Current_Sol_ID",
+          "code_change": "Brief summary of the key code edits that introduced the bad strategy.",
+          "metrics_delta": "Exact regression (e.g., Runtime: 120ms -> 200ms, +66% or caused WA/TLE).",
+          "context": "Conditions where this strategy is risky (e.g., deep recursion, large N, dense graph)."
+        }
+      ]
     }
   ],
 
@@ -582,11 +703,24 @@ You must output a single JSON object **strictly** adhering to this schema:
       "type": "Failure | Neutral",
       "title": "Concise title of the anti-pattern or failure mode.",
       "description": "One-sentence summary of why this approach is dangerous.",
-      "content": "2–6 bullet points explaining what went wrong, under what conditions it fails, and how to avoid it."
+      "content": "2–6 bullet points explaining what went wrong, under what conditions it fails, and how to avoid it.",
+      "evidence": [
+        {
+          "solution_id": "Current_Sol_ID",
+          "code_change": "Brief snippet or description of the harmful change.",
+          "metrics_delta": "Exact regression (e.g., +80ms or increased memory by 2x, or caused incorrect results).",
+          "context": "Problem constraints or inputs that triggered the failure."
+        }
+      ]
     }
   ]
 }
-        """.strip()
+```
+
+Notes:
+- If there is no meaningful strategy-level change, set "step_outcome": "Neutral" and both arrays to [].
+- Do not mark previously successful strategies as failed just because one noisy run was slower.
+        """
         user_template = """    
 ## Optimization Target
 
@@ -799,7 +933,7 @@ You must output a single JSON object **strictly** adhering to this schema:
                         system_prompt=sys_prompt,
                         user_prompt=user_prompt,
                         temperature=0.7,
-                        max_tokens=20000,
+                        max_tokens=10000,
                         usage_context="memory.compress",
                     )
                     self.logger.debug(f"LLM原始响应 (压缩，第{attempt}次):\n{llm_response}")
@@ -831,96 +965,165 @@ You must output a single JSON object **strictly** adhering to this schema:
         # 1. System Prompt: 同时管理 Reasoning Bank 和 Directions
         system_prompt = f"""
 You are the **Chief Knowledge Officer** of an evolutionary coding agent.
+Your job is to **compress and consolidate** the agent's local memory so that it remains:
+- small enough to fit within a token limit (~{token_limit} tokens), and
+- rich enough to guide future evolution.
 
-You will be given a local memory object for a **single problem**, containing:
-- `direction_board`: high-level strategies tried on this problem (with status, counts, evidence).
-- `experience_library`: distilled experiences and lessons (with evidence).
+The memory you receive has two main components:
+1. `direction_board`: high-level strategies that have been tried on this problem.
+2. `experience_library`: distilled experiences and lessons learned.
 
-Your job is to **compress and consolidate** both so that the memory:
-- fits within ~{token_limit} tokens, and
-- keeps the most **generalizable and high-value** strategies and lessons to guide future evolution.
+You must output a **cleaned and consolidated** version of BOTH.
 
-## Guidelines
+---
 
-You must first **think about what is truly important** in this memory:
-- Which strategies clearly matter for performance/correctness?
-- Which lessons are reusable patterns, not one-off noise?
+## Part 1: Compress `direction_board` (Strategy Board)
 
-Then you rewrite and merge items into a smaller, cleaner memory.
+Each item in `direction_board` has the schema:
+- `direction`: high-level strategy name (natural language).
+- `description`: 1–3 sentences explaining what the strategy does and when it applies.
+- `status`: "Success" | "Failed" | "Neutral" | "Untried".
+- `success_count`: integer.
+- `failure_count`: integer.
+- `evidence`: list of objects with fields:
+- `solution_id`
+- `metrics_delta`
+- `code_change`
+- `context`
+- (optionally) `step_outcome`
 
-### Direction Board (strategy-level)
+Your tasks:
 
-- Treat `direction_board` as a set of strategy hypotheses.
-- **Merge semantically similar strategies** into a single, clearer direction:
-  - Rewrite `direction` as a concise, unique strategy name.
-  - Rewrite `description` as 2–6 sentences explaining what it does and when it applies.
-- **Aggregate counts and evidence**:
-  - Sum `success_count` / `failure_count` from merged items (missing counts → 0).
-  - Set `status` to "Success", "Failed", or "Neutral" based on the overall evidence
-    (do not invent counts or outcomes).
-- **Prune low-value directions**:
-  - Remove vague, noisy, or fully redundant strategies
-    (e.g., pure measurement noise, “no change / OS jitter”).
-  - Aim to keep at most **5–8** strong directions.
+1. **Merge semantically similar strategies**
+- If multiple entries describe essentially the same idea (e.g., "Use fast I/O", "Replace cin/cout with scanf", "Enable sync_with_stdio(false) for faster input"),
+    merge them into a SINGLE consolidated direction.
+- Rewrite `direction` as a clear, unique strategy name.
+- Rewrite `description` as a compact but informative description (1–3 sentences).
 
-Each direction item keeps the schema:
-- `direction`, `description`, `status`, `success_count`, `failure_count`(and optionally `step_outcome` if present).
+2. **Aggregate counts and status**
+- For merged directions, set:
+    - `success_count` = sum of `success_count` from all merged items (treat missing counts as 0).
+    - `failure_count` = sum of `failure_count` from all merged items.
+- Compute `status` as:
+    - "Success" if successes clearly dominate and there is at least one meaningful improvement example.
+    - "Failed" if failures clearly dominate and there is at least one clear regression or correctness issue.
+    - "Neutral" if evidence is weak, conflicting, or mostly within noise/jitter (e.g., < 3% or < 0.05s absolute change).
+- Do NOT invent fake counts. Use only what is implied by the input.
 
-### Experience Library (lesson-level)
+3. **Compress evidence**
+- Merge evidence lists from all merged entries.
+- Select at most **3** evidence items per direction.
+- Prefer:
+    - larger performance deltas (absolute or percentage change),
+    - diverse contexts (different input sizes, patterns, or solution styles),
+    - clear code changes that illustrate the strategy.
+- Each evidence item must preserve the fields:
+    - `solution_id`, `code_change`, `metrics_delta`, `context`
+    - (you may keep `step_outcome` if present, but you must not invent it).
 
-- Treat `experience_library` as higher-level lessons about **when strategies work or fail**.
-- **Merge overlapping experiences** that describe the same lesson into a single, stronger item:
-  - Choose a clear, general `title`.
-  - Rewrite `description` as a one-sentence summary.
-  - Rewrite `content` into **3–7** concise bullet points or short paragraphs, include：
-    - when it applies
-    - why it works or fails
-    - trade-offs / risks
-- Set `type`:
-  - "Success" → lesson clearly leads to better performance/correctness when applied properly.
-  - "Failure" → mainly a warning/anti-pattern.
-  - "Neutral" → evidence weak / mixed / mostly noise.
-- **Filter trivial items**:
-  - Discard items that only reflect measurement noise, minor impacts, or are covered by more general experiences.
+4. **Prune low-value directions**
+- Remove directions that are:
+    - extremely vague (e.g., "optimize code a bit"),
+    - pure noise (e.g., strategies about "OS jitter" or "no code change"),
+    - fully redundant with another, better described direction.
+- Aim to keep roughly **5–8** directions that are genuinely useful for guiding future exploration.
 
-Each experience item keeps the schema:
-- `type`, `title`, `description`, `content`
+---
+
+## Part 2: Compress `experience_library` (Experience Library)
+
+Each item in `experience_library` has the schema:
+- `type`: "Success" | "Failure" | "Neutral".
+- `title`: concise name of the experience.
+- `description`: one-sentence summary.
+- `content`: 2–6 bullet points or short paragraphs giving details.
+- `evidence`: list of objects with fields:
+- `solution_id`
+- `code_change`
+- `metrics_delta`
+- `context`
+
+Your tasks:
+
+1. **Merge overlapping experiences**
+- If multiple items describe the same underlying lesson (e.g., multiple entries about "bitwise modulo for power-of-two MOD"),
+    merge them into a single, stronger experience.
+- Choose a clear, general `title`.
+- Rewrite `description` to summarize the key idea in one sentence.
+- Merge and rewrite `content` into 3–7 concise bullet points or short paragraphs:
+    - when it applies,
+    - why it works or fails,
+    - what the main trade-offs or risks are.
+- Merge their evidence lists and keep at most **3** of the most representative items.
+
+2. **Determine `type`**
+- If the lesson clearly results in better performance or correctness when applied properly, mark as "Success".
+- If the lesson is mainly a warning/anti-pattern, mark as "Failure".
+- If the evidence is weak, mixed, or mainly about measurement noise, mark as "Neutral".
+
+3. **Filter out trivial or redundant items**
+- Discard entries that:
+    - only reflect measurement noise with no actionable lesson,
+    - have negligible effect (< 1% change) AND no interesting reasoning content,
+    - are completely subsumed by a merged, more general experience.
+
+---
 
 ## Global Constraints
 
-- Do **NOT** invent new strategies, evidence, metrics, or counts.
-- You **may** rewrite text (names, descriptions, content) for clarity and consolidation.
-- Preserve the overall JSON schema but reduce the number of items to stay within ~{token_limit} tokens.
-- It is allowed for `direction_board` or `experience_library` to become an empty list.
+- You MUST NOT invent new strategies, evidence, or numbers.
+- You MAY rewrite text (direction, description, content) for clarity and consolidation.
+- You MUST preserve the overall JSON schema, but you can reduce the number of items.
+- Try to keep the final memory compact enough to reasonably fit within ~{token_limit} tokens.
+
+---
 
 ## Output Format
 
-Return a **single JSON object** with:
+Output a SINGLE JSON object with the following keys:
 
+```json
 {{
-  "thought_process": "Briefly explain how you compressed and merged the memory.",
-  "direction_board": [
+"thought_process": "Briefly explain how you compressed and merged the memory (max 2 sentences).",
+"direction_board": [
     {{
-      "direction": "...",
-      "description": "...",
-      "status": "Success | Failed | Neutral | Untried",
-      "success_count": 0,
-      "failure_count": 0,
+                "direction": "Concise, unique strategy name.",
+    "description": "1–3 sentences explaining what the strategy does and when to apply it.",
+    "status": "Success | Failed | Neutral | Untried",
+    "success_count": 0,
+    "failure_count": 0,
+    "evidence": [
+        {{
+                    "solution_id": "...",
+        "code_change": "...",
+        "metrics_delta": "...",
+        "context": "..."
+        }}
+    ]
     }}
-  ],
-  "experience_library": [
+],
+"experience_library": [
     {{
-      "type": "Success | Failure | Neutral",
-      "title": "...",
-      "description": "...",
-      "content": "2–6 bullet points or short paragraphs.",
+                "type": "Success | Failure | Neutral",
+    "title": "Concise experience title.",
+    "description": "One-sentence summary of the lesson.",
+    "content": "2–6 bullet points or short paragraphs giving details.",
+    "evidence": [
+        {{
+                    "solution_id": "...",
+        "code_change": "...",
+        "metrics_delta": "...",
+        "context": "..."
+        }}
+    ]
     }}
-  ]
+]
 }}
+```
 
-- If a list is empty, return it as `[]`.
-- Return **only** this JSON object (no extra text, no backticks).
-"""
+- If some list is empty, return an empty array ([]) for that list.
+- Return only the JSON object, with no extra commentary or backticks.
+        """
 
         # 2. User Prompt: 注入当前数据
         data_to_compress = {
@@ -939,6 +1142,7 @@ The current memory is too fragmented and may exceed the token limit.
 Please compress and consolidate the direction_board and experience_library above:
 
 - Merge duplicate or overlapping strategies and experiences.
+- Aggregate their evidence.
 - Recompute status/counts where appropriate.
 - Prune low-value or noisy entries.
 
@@ -959,10 +1163,38 @@ Output ONLY the valid JSON object.
             if not isinstance(item, dict):
                 msg = "direction_board项必须为对象"
                 raise ValueError(msg)
+            for k in ("direction", "description", "status", "success_count", "failure_count", "evidence"):
+                if k not in item:
+                    msg = f"direction_board项缺少键: {k}"
+                    raise ValueError(msg)
+            ev = item.get("evidence")
+            if not isinstance(ev, list):
+                msg = "direction_board.evidence必须为列表"
+                raise ValueError(msg)
+            for e in ev:
+                if not isinstance(e, dict):
+                    msg = "evidence项必须为对象"
+                    raise ValueError(msg)
         el = data.get("experience_library")
         if not isinstance(el, list):
             msg = "experience_library必须为列表"
             raise ValueError(msg)
+        for item in el:
+            if not isinstance(item, dict):
+                msg = "experience_library项必须为对象"
+                raise ValueError(msg)
+            for k in ("type", "title", "description", "content", "evidence"):
+                if k not in item:
+                    msg = f"experience_library项缺少键: {k}"
+                    raise ValueError(msg)
+            ev = item.get("evidence")
+            if not isinstance(ev, list):
+                msg = "experience_library.evidence必须为列表"
+                raise ValueError(msg)
+            for e in ev:
+                if not isinstance(e, dict):
+                    msg = "evidence项必须为对象"
+                    raise ValueError(msg)
 
     def extract_and_update(
         self,
@@ -1082,6 +1314,8 @@ Output ONLY the valid JSON object.
                     self.logger.error(f"LLM记忆提炼最终失败: {last_error}")
             except Exception as e:
                 self.logger.warning(f"LLM记忆提炼失败，使用规则回退: {e}")
+
+        # 不再进行单项插入的兼容处理
 
         # 更新全局状态
         gs = memory.get("global_status") or {}
