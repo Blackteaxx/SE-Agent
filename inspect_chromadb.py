@@ -4,7 +4,7 @@ import os
 # Define the path to the ChromaDB directory
 # The path provided by the user was: \data\CodeEfficiency\SE-Agent\trajectories_perf\deepseek-v3\deepseek-v3-test-global_memory-example_20251206_133305\global_memory
 # Converting to Linux path format
-PERSIST_DIRECTORY = "/workspace/CodeEfficiency/SE-Agent/trajectories_perf/deepseek-v3.1/deepseek-v3.1-Plan-AutoSelect-slot-LocalMemory-GlobalMemory-context_aware_direct_20251206_195034/global_memory"
+PERSIST_DIRECTORY = "/data/CodeEfficiency/SE-Agent/trajectories_perf/deepseek-v3.1/deepseek-v3.1-Plan-AutoSelect-LocalMemory-ReuseGlobalMemory/global_memory"
 
 
 def inspect_chromadb(persist_directory):
