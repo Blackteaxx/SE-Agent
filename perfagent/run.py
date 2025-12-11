@@ -100,19 +100,6 @@ def run_single_instance(config: PerfAgentConfig, instance_path: Path, base_dir: 
         result = agent.run(instance)
 
         logger.info(f"优化完成: {result['instance_id']}")
-        # 兼容不同返回结构：initial_performance 可能是浮点数（trimmed_mean）或包含分析字典
-        try:
-            init_perf = result.get("initial_performance")
-            if isinstance(init_perf, dict):
-                init_trim = init_perf.get("performance_analysis", {}).get("trimmed_mean", "N/A")
-            else:
-                init_trim = init_perf
-
-            final_perf = result.get("final_performance", "N/A")
-            logger.info(f"性能改进: {init_trim} -> {final_perf}")
-        except Exception as e_log:
-            logger.warning(f"打印性能改进信息失败: {e_log}")
-
         # 写出问题描述到 <instance_dir>/<task_name>.problem
         try:
             problem_text = (
@@ -142,32 +129,9 @@ def run_single_instance(config: PerfAgentConfig, instance_path: Path, base_dir: 
                 submission_code = (
                     info.get("final_best_code") or info.get("submission") or info.get("final_submission_code") or ""
                 )
-
-            lang = (
-                result.get("language")
-                or info.get("language")
-                or getattr(local_config.language_cfg, "language", None)
-                or "unknown"
-            )
-            opt_target = (
-                result.get("optimization_target")
-                or info.get("optimization_target")
-                or getattr(local_config.optimization, "target", None)
-                or "runtime"
-            )
-            unit = result.get("performance_unit") or (
-                "s" if opt_target == "runtime" else ("MB" if opt_target == "memory" else "MB*s")
-            )
-            comment_prefix = "#" if str(lang).lower() == "python3" else "//"
-            header = (
-                f"{comment_prefix} lang={lang}\n"
-                f"{comment_prefix} optimization_target={opt_target}\n"
-                f"{comment_prefix} performance_unit={unit}\n\n"
-            )
-
             pred_file = instance_output_dir / f"{task_name}.pred"
             with open(pred_file, "w", encoding="utf-8") as pf:
-                pf.write(header + (submission_code or ""))
+                pf.write((submission_code or ""))
             logger.info(f"写出预测结果: {pred_file}")
         except Exception as e:
             logger.error(f"写出 .pred 失败: {e}")

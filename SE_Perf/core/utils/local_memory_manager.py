@@ -77,7 +77,7 @@ class LocalMemoryManager:
         self,
         memory_path: str | Path,
         llm_client: LLMClient | None = None,
-        token_limit: int = 3000,
+        token_limit: int = 5000,
         format_mode: str = "short",
     ) -> None:
         """
@@ -521,6 +521,11 @@ Notes:
 
 {optimization_target}
 
+The optimization target is **integral**:  
+- Interpret this as the **integral of memory usage over runtime** for all test cases, i.e., the **area under the memory–time curve**.
+- Your performance judgments should consider **both** runtime and memory, focusing on how each slot affects this **memory–time integral**, not just speed or memory in isolation.
+- A slot that is slightly slower but uses much less memory can be better if it reduces the overall integral, and vice versa.
+
 ## Language
 
 {language}
@@ -725,6 +730,12 @@ Notes:
 ## Optimization Target
 
 {optimization_target}
+
+The optimization target is **integral**:  
+- Interpret this as the **integral of memory usage over runtime** for all test cases, i.e., the **area under the memory–time curve**.
+- Your performance judgments should consider **both** runtime and memory, focusing on how each slot affects this **memory–time integral**, not just speed or memory in isolation.
+- A slot that is slightly slower but uses much less memory can be better if it reduces the overall integral, and vice versa.
+
 
 ## Language
 
@@ -1232,7 +1243,7 @@ Output ONLY the valid JSON object.
         try:
             # New performance
             if perf_metrics:
-                new_perf_val = perf_metrics.get("final_performance") or perf_metrics.get("performance")
+                new_perf_val = perf_metrics.get("performance")
                 perf_new = float(new_perf_val) if new_perf_val is not None else None
             if perf_new is None:
                 # Fallback to top-level performance field
@@ -1247,7 +1258,7 @@ Output ONLY the valid JSON object.
                     # Try perf_metrics
                     entry_perf_metrics = entry.get("perf_metrics")
                     if entry_perf_metrics:
-                        perf_val = entry_perf_metrics.get("final_performance") or entry_perf_metrics.get("performance")
+                        perf_val = entry_perf_metrics.get("performance")
                         val = float(perf_val) if perf_val is not None else None
                     # Try top-level
                     if val is None:

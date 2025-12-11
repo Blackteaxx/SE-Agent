@@ -1,6 +1,5 @@
 import json
 import logging
-import random
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -68,43 +67,9 @@ def run_tests(
     raise_on_error: bool = True,
     as_batch: bool = True,
     backend_retries: int = 5,
-    eval_timeout: int = 30,  # Increased from 10 to 30 seconds
+    eval_timeout: int = 10,
     polling_interval: int = 5,
 ) -> list[dict]:
-    """Runs a solution against a set of test cases and evaluates the results.
-
-    This function takes a code solution, a set of test cases, and an evaluator,
-    and then runs the solution against each test case in a sandboxed environment.
-    It supports batch submission, time and memory limits, and retries.
-
-    Args:
-        lang: The programming language of the solution (e.g., "python", "java").
-        solution: A string containing the source code of the solution to be tested.
-        test_cases: A list of test cases, where each test case is a dictionary
-            containing at least an "input" key for stdin.
-        evaluator: A string containing Python code for an `evaluate` function
-            that will be used to check the correctness of the solution's output.
-        test_runner: An optional string containing test runner code to be combined
-            with the solution code.
-        time_limit: The time limit for each test case in seconds. Defaults to 10.
-        memory_limit: The memory limit for each test case in megabytes. Defaults to 1024.
-        early_stop: If True, testing will stop after the first failed test case.
-            Defaults to True.
-        raise_on_error: If True, an exception will be raised if an error occurs
-            during testing. Defaults to True.
-        as_batch: If True, all test cases are submitted to the backend as a single
-            batch. Otherwise, they are submitted concurrently. Defaults to True.
-        backend_retries: The number of times to retry connecting to the backend.
-            Defaults to 5.
-        eval_timeout: The timeout for the entire evaluation process in seconds.
-            Defaults to 10.
-        polling_interval: The interval in seconds at which to poll for test
-            results. Defaults to 5.
-
-    Returns:
-        A list of dictionaries, where each dictionary represents the result of a
-        single test case evaluation.
-    """
     code = get_full_code(lang, solution, test_runner) if test_runner else solution
     sandbox_lang = get_sandbox_lang(lang)
     libraries = EFFIBENCH_REGISTRY.get(lang, {}).get("packages", [])
@@ -123,28 +88,13 @@ def run_tests(
         }
         for tc in test_cases
     ]
-    # Estimate payload size (stdin dominates) to tune request timeout for large inputs
-    try:
-        total_stdin_bytes = sum(len(req["stdin"]) if req.get("stdin") else 0 for req in batch_requests)
-    except Exception:
-        total_stdin_bytes = 0
-    estimated_payload_mb = total_stdin_bytes / (1024 * 1024)
-    submit_timeout = 1200
-    if estimated_payload_mb >= 200:
-        submit_timeout = 3600
-    logging.debug(f"Estimated submit payload: {estimated_payload_mb:.1f} MB; request_timeout={submit_timeout}s")
-
     evaluate = materialize_function_from_code(evaluator, "evaluate")
     for retry_count in range(backend_retries + 1):
         try:
             backend_base_url = get_backend_url()
 
             if as_batch:
-                sids = submit_batch(
-                    batch_requests,
-                    backend_base_url=backend_base_url,
-                    request_timeout=submit_timeout,
-                )
+                sids = submit_batch(batch_requests, backend_base_url=backend_base_url)
             else:
                 sids = [None] * len(batch_requests)
                 with ThreadPoolExecutor(len(batch_requests)) as executor:
@@ -158,7 +108,6 @@ def run_tests(
                             time_limit=req["time_limit"],
                             memory_limit=req["memory_limit"],
                             backend_base_url=backend_base_url,
-                            request_timeout=submit_timeout,
                         ): tid
                         for tid, req in enumerate(batch_requests)
                     }
@@ -169,17 +118,9 @@ def run_tests(
             sid_to_tid = {sid: tid for tid, sid in enumerate(sids)}
             all_results = [None] * len(test_cases)
             pending_ids = set(sids)
-            # Retry tracker for rare cases where stdout is empty despite successful execution
-            empty_text_retries: dict[str, int] = {}
-            # Fallback tracker: resubmit at most once per test to avoid permanent empty stdout
-            resubmit_counts: dict[int, int] = {}
 
             while len(pending_ids):
-                # 动态缩短轮询间隔：当存在空 stdout 的快速重试时，优先用更短的等待
-                if empty_text_retries:
-                    time.sleep(min(0.1, polling_interval))
-                else:
-                    time.sleep(polling_interval)
+                time.sleep(polling_interval)
 
                 batch_results = get_batch_results(list(pending_ids), backend_base_url=backend_base_url)
                 new_result_ids = set()
@@ -188,53 +129,7 @@ def run_tests(
                     assert sid in pending_ids, f"Submission ID {sid} not in pending IDs"
 
                     if result_data["status"] not in ("waiting", "processing"):
-                        tid = sid_to_tid[sid]
-                        # Guard against rare race where stdout is not yet captured
-                        try:
-                            output_text = postprocess_text(result_data.get("text", ""))
-                            expected_text = postprocess_text(test_cases[tid].get("output", ""))
-                        except Exception:
-                            output_text, expected_text = (
-                                result_data.get("text", ""),
-                                test_cases[tid].get("output", ""),
-                            )
-
-                        if result_data.get("exit_code") == 0 and output_text == "" and expected_text != "":
-                            # Retry polling this submission a few times to allow backend to finalize stdout
-                            retry_count_local = empty_text_retries.get(sid, 0)
-                            # 降低最大重试数以更快进入后续处理/回退逻辑
-                            max_empty_text_retries = 3
-                            if retry_count_local < max_empty_text_retries:
-                                empty_text_retries[sid] = retry_count_local + 1
-                                # Exponential backoff bounded to 4s to reduce race likelihood
-                                # 更快的指数退避：起始 50ms，最大 500ms
-                                backoff = min(0.05 * (2**retry_count_local), 0.5)
-                                time.sleep(backoff)
-                                continue
-                            # If stdout is still empty after retries, resubmit this single test once.
-                            tid_for_resubmit = sid_to_tid[sid]
-                            if resubmit_counts.get(tid_for_resubmit, 0) < 1:
-                                req = batch_requests[tid_for_resubmit]
-                                new_sid = submit_code(
-                                    code=req["code"],
-                                    language=req["language"],
-                                    libraries=req["libraries"],
-                                    stdin=req["stdin"],
-                                    time_limit=req["time_limit"],
-                                    memory_limit=req["memory_limit"],
-                                    backend_base_url=backend_base_url,
-                                )
-                                # Replace old sid with new sid in tracking structures
-                                pending_ids.discard(sid)
-                                sid_to_tid.pop(sid, None)
-                                sid_to_tid[new_sid] = tid_for_resubmit
-                                pending_ids.add(new_sid)
-                                resubmit_counts[tid_for_resubmit] = 1
-                                empty_text_retries[new_sid] = 0
-                                # Skip finalization for the old sid; wait for the new one
-                                continue
-
-                        all_results[tid] = {**result_data, **test_cases[tid]}
+                        all_results[sid_to_tid[sid]] = {**result_data, **test_cases[sid_to_tid[sid]]}
                         pending_ids.remove(sid)
                         new_result_ids.add(sid)
                 new_results = [all_results[sid_to_tid[sid]] for sid in new_result_ids]
@@ -247,9 +142,7 @@ def run_tests(
                             with ThreadPoolExecutor(max_workers=len(pending_ids)) as cancel_executor:
                                 cancel_futures = [
                                     cancel_executor.submit(
-                                        cancel_submission,
-                                        sid_to_cancel,
-                                        backend_base_url=backend_base_url,
+                                        cancel_submission, sid_to_cancel, backend_base_url=backend_base_url
                                     )
                                     for sid_to_cancel in pending_ids
                                 ]
@@ -279,10 +172,7 @@ def run_tests(
                                     test_input if len(test_input) < 2000 else test_input[:2000] + "...truncated..."
                                 )
                                 test_case_str = json.dumps(
-                                    {
-                                        "input": test_input_display,
-                                        "output": result_data.get("output", ""),
-                                    }
+                                    {"input": test_input_display, "output": result_data.get("output", "")}
                                 )
                                 output_display = output if len(output) < 2000 else output[:2000] + "...truncated..."
                                 raise AssertionError(
@@ -296,10 +186,7 @@ def run_tests(
                                     test_input if len(test_input) < 2000 else test_input[:2000] + "...truncated..."
                                 )
                                 test_case_str = json.dumps(
-                                    {
-                                        "input": test_input_display,
-                                        "output": result_data.get("output", ""),
-                                    }
+                                    {"input": test_input_display, "output": result_data.get("output", "")}
                                 )
                                 raise EvaluatorTimeoutError(
                                     f"Solution Evaluator timed out after {eval_timeout} seconds.\nTest case: {test_case_str}\nCode: {code}\n"
@@ -316,18 +203,9 @@ def run_tests(
 
         except BackendUnavailableError as e:
             if retry_count < backend_retries:
-                # 计算重试延迟：基础延迟 + 指数退避 + 随机抖动
-                base_delay = 2.0  # 基础延迟2秒
-                exponential_delay = base_delay * (2**retry_count)  # 指数退避
-                jitter = random.uniform(0.5, 1.5)  # 随机抖动因子
-                retry_delay = min(exponential_delay * jitter, 30.0)  # 最大延迟30秒
-
                 logging.warning(
-                    f"Backend unavailable during execution (attempt {retry_count + 1}/{backend_retries + 1}): {e}. "
-                    f"Retrying in {retry_delay:.2f} seconds..."
+                    f"Backend unavailable during execution (attempt {retry_count + 1}/{backend_retries + 1}): {e}. Retrying..."
                 )
-                time.sleep(retry_delay)
                 continue
             logging.error(f"All backends failed after {backend_retries} retries: {e}")
             raise
-    return None

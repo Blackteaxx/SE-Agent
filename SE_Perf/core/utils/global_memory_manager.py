@@ -327,6 +327,11 @@ Each step contains:
 - A "Previous Solution" (code + perf_metrics)
 - A "Current Solution" (code + perf_metrics)
 
+The optimization target is **integral**:  
+- Interpret this as the **integral of memory usage over runtime** for all test cases, i.e., the **area under the memory–time curve**.
+- Your performance judgments should consider **both** runtime and memory, focusing on how each slot affects this **memory–time integral**, not just speed or memory in isolation.
+- A slot that is slightly slower but uses much less memory can be better if it reduces the overall integral, and vice versa.
+
 ## Guidelines
 
 Your goal is to compare and contrast these trajectories to identifythe most useful and generalizable

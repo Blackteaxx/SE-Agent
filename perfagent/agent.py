@@ -244,6 +244,8 @@ class PerfAgent:
                 "runtime": float("inf"),
                 "memory": float("inf"),
                 "integral": float("inf"),
+                "pass_rate": 0.0,
+                "passed": False,
                 "analysis": {
                     "runtime": {
                         "original_n": 0,
@@ -298,6 +300,8 @@ class PerfAgent:
                 "runtime": float("inf"),
                 "memory": float("inf"),
                 "integral": float("inf"),
+                "pass_rate": 0.0,
+                "passed": False,
                 "analysis": {
                     "runtime": {
                         "original_n": 0,
@@ -365,6 +369,8 @@ class PerfAgent:
                 "runtime": float("inf"),
                 "memory": float("inf"),
                 "integral": float("inf"),
+                "pass_rate": 0.0,
+                "passed": False,
                 "analysis": {
                     "runtime": {
                         "original_n": 0,
@@ -410,20 +416,10 @@ class PerfAgent:
             }
 
         # 计算单次运行通过率（优先使用返回的 pass_rates）
-        pr_list = single_run_summary.get("pass_rates", [])
-        if pr_list:
-            single_pass_rate = float(pr_list[0])
-        else:
-            try:
-                first_run_details = single_run_summary.get("first_run_details", [])
-                total_cases = len(first_run_details) if first_run_details else 0
-                num_passed = sum(1 for tc in (first_run_details or []) if tc.get("passed", False))
-                single_pass_rate = num_passed / total_cases if total_cases > 0 else 0.0
-            except Exception:
-                single_pass_rate = 0.0
+        passed = single_run_summary.get("performance_analysis").get("passed", False)
 
         # 若未全部通过，直接返回单次运行的结果（不进行多次性能评估）
-        if single_pass_rate < 1.0:
+        if not passed:
             return single_run_summary
 
         # 所有测试用例通过，进行正式的多次性能评估
@@ -442,8 +438,52 @@ class PerfAgent:
             return result
         except Exception as e:
             self.logger.error(f"性能评估失败: {e}")
+            perf = {
+                "original_n": 0,
+                "n": 0,
+                "runtime": float("inf"),
+                "memory": float("inf"),
+                "integral": float("inf"),
+                "passed": False,
+                "pass_rate": 0.0,
+                "analysis": {
+                    "runtime": {
+                        "original_n": 0,
+                        "n": 0,
+                        "mean": float("inf"),
+                        "std": float("inf"),
+                        "min": float("inf"),
+                        "max": float("inf"),
+                        "max_diff": float("inf"),
+                        "95%_CI": (float("inf"), float("inf")),
+                        "trimmed_mean": float("inf"),
+                    },
+                    "memory": {
+                        "original_n": 0,
+                        "n": 0,
+                        "mean": float("inf"),
+                        "std": float("inf"),
+                        "min": float("inf"),
+                        "max": float("inf"),
+                        "max_diff": float("inf"),
+                        "95%_CI": (float("inf"), float("inf")),
+                        "trimmed_mean": float("inf"),
+                    },
+                    "integral": {
+                        "original_n": 0,
+                        "n": 0,
+                        "mean": float("inf"),
+                        "std": float("inf"),
+                        "min": float("inf"),
+                        "max": float("inf"),
+                        "max_diff": float("inf"),
+                        "95%_CI": (float("inf"), float("inf")),
+                        "trimmed_mean": float("inf"),
+                    },
+                },
+            }
             return {
-                "performance_analysis": {"trimmed_mean": float("inf")},
+                "performance_analysis": perf,
                 "first_run_details": [],
                 "failed_test_details": [],
                 "pass_rates": [],
@@ -507,8 +547,6 @@ class PerfAgent:
             initial_evaluation_summary = {
                 "performance_analysis": initial_performance.get("performance_analysis", {}),
                 "failed_test_details": initial_performance.get("failed_test_details", [])[:3],
-                "pass_rates": initial_performance.get("pass_rates", []),
-                "pass_rate_consistent": initial_performance.get("pass_rate_consistent", False),
             }
             initial_summary_text = self._build_summary_text(
                 iteration=1 if iter_offset else 0,
@@ -550,6 +588,8 @@ class PerfAgent:
 
             # 记录当前代码对应的最新评估结果（用于提示构造）
             current_benchmark_results = initial_performance
+            # 记录当前最佳评估结果（与 best_code 对应），用于最终输出完整三项指标
+            best_benchmark_results = initial_performance
 
             # 迭代优化
             no_improve_count = 0  # 连续未改进计数（跨迭代累积）
@@ -581,12 +621,19 @@ class PerfAgent:
                 messages = self._build_messages(system_prompt, trajectory.history, opt_prompt)
 
                 if self.llm_client:
-                    optimization_response = self.llm_client.call_llm(
-                        messages,
-                        temperature=self.config.model.temperature,
-                        max_tokens=self.config.model.max_output_tokens,
-                        usage_context="perfagent.optimize",
-                    )
+                    try:
+                        optimization_response = self.llm_client.call_llm(
+                            messages,
+                            temperature=self.config.model.temperature,
+                            max_tokens=self.config.model.max_output_tokens,
+                            usage_context="perfagent.optimize",
+                        )
+                    except TypeError:
+                        optimization_response = self.llm_client.call_llm(
+                            messages,
+                            temperature=self.config.model.temperature,
+                            max_tokens=self.config.model.max_output_tokens,
+                        )
                 else:
                     # 保守回退：LLM 未配置时返回空建议，避免引入无效 diff
                     optimization_response = "LLM 未配置或不可用，跳过本次优化建议。请检查 API 配置。"
@@ -727,6 +774,7 @@ class PerfAgent:
                             best_pass_rate = current_pass_rate
                             best_performance = current_performance
                             best_code = optimized_code
+                            best_benchmark_results = performance_result
                             self.logger.info(
                                 f"采用更优代码: pass_rate {best_pass_rate:.2f}, {target} {best_performance:.4f}"
                             )
@@ -849,10 +897,13 @@ class PerfAgent:
             except Exception:
                 pass
 
+            executed_iterations = len(self.optimization_history)
+            optimized_code_final = latest_optimized_code if executed_iterations == 1 else best_code
+
             final_result = {
                 "instance_id": instance_id,
                 "initial_code": initial_code,
-                "optimized_code": latest_optimized_code,
+                "optimized_code": optimized_code_final,
                 "initial_performance": initial_trimmed,
                 "final_performance": best_performance,
                 # 总迭代数 = 初始评估(若存在) + 实际优化循环次数
@@ -868,20 +919,57 @@ class PerfAgent:
             final_result["performance_unit"] = unit
 
             try:
-                md_metrics, md_artifacts = self._build_metrics_and_artifacts(current_benchmark_results)
-                final_result["final_artifacts"] = self._format_artifacts_md(md_artifacts)
+                result_for_output = best_benchmark_results if executed_iterations > 1 else current_benchmark_results
+                metrics_dict, artifacts_dict = self._build_metrics_and_artifacts(result_for_output)
+                metrics_md = self._format_metrics_md(metrics_dict)
+                artifacts_md = self._format_artifacts_md(artifacts_dict)
+
+                final_artifacts = "Current Metrics:\n" + metrics_md + "\n\nCurrent Artifacts:\n" + artifacts_md
+
+                final_result["final_artifacts"] = final_artifacts
             except Exception:
                 final_result["final_artifacts"] = None
 
+            # 汇总最终三项指标（runtime/memory/integral），便于后续使用
+            try:
+                perf_metrics = result_for_output.get("performance_analysis", {})
+                final_result["final_metrics"] = {
+                    "runtime": perf_metrics.get("runtime", "Infinity"),
+                    "memory": perf_metrics.get("memory", "Infinity"),
+                    "integral": perf_metrics.get("integral", "Infinity"),
+                }
+            except Exception:
+                final_result["final_metrics"] = {
+                    "runtime": "Infinity",
+                    "memory": "Infinity",
+                    "integral": "Infinity",
+                }
+
             # 记录最终轨迹
+            selected_value = final_result.get("final_metrics", {}).get(target)
+            try:
+                if isinstance(selected_value, str):
+                    s = selected_value.strip().lower()
+                    if s in ("inf", "+inf", "infinity", "+infinity"):
+                        selected_value = float("inf")
+                    elif s in ("-inf", "-infinity"):
+                        selected_value = float("-inf")
+                    else:
+                        selected_value = float(selected_value)
+            except Exception:
+                pass
+
             trajectory_file = trajectory.finalize(
                 success=final_result["success"],
                 final_performance={
                     "target": self.config.optimization.target,
-                    "trimmed_mean": best_performance,
                     "unit": unit,
+                    "value": selected_value if selected_value is not None else best_performance,
+                    "runtime": final_result.get("final_metrics", {}).get("runtime"),
+                    "memory": final_result.get("final_metrics", {}).get("memory"),
+                    "integral": final_result.get("final_metrics", {}).get("integral"),
                 },
-                final_submission_code=latest_optimized_code,
+                final_submission_code=optimized_code_final,
             )
 
             final_result["trajectory_file"] = trajectory_file
@@ -963,8 +1051,9 @@ class PerfAgent:
 
         # 失败情况：汇总失败信息并返回错误指标
         target = self.config.optimization.target
-        target_value = performance_metrics.get(target, float("inf"))
-        if failed_test_details or target_value == float("inf"):
+
+        passed = performance_metrics.get("passed", False)
+        if not passed:
             num_failed = len(failed_test_details)
             num_total = len(benchmark_results.get("first_run_details", []))
             pass_rate = (num_total - num_failed) / num_total if num_total > 0 else 0
@@ -995,7 +1084,9 @@ class PerfAgent:
 
             metrics = {
                 "pass_rate": pass_rate,
-                f"trimmed_mean_{target}": "Infinity",
+                "runtime": "Infinity",
+                "memory": "Infinity",
+                "integral": "Infinity",
                 "target": target,
                 "error": (
                     f"Solution failed {len(failed_test_details)} test case(s) with statuses: {all_statuses}. See artifacts for details."
@@ -1005,11 +1096,12 @@ class PerfAgent:
 
         # 成功情况：计算时间分数与综合分数
         pass_rate = 1.0
-        trimmed_mean_runtime = performance_metrics.get(target, float("inf"))
 
         metrics = {
             "pass_rate": pass_rate,
-            f"trimmed_mean_{target}": trimmed_mean_runtime,
+            "runtime": performance_metrics.get("runtime", "Infinity"),
+            "memory": performance_metrics.get("memory", "Infinity"),
+            "integral": performance_metrics.get("integral", "Infinity"),
             "target": target,
         }
         artifacts = {"details": "All test cases passed."}
@@ -1018,7 +1110,7 @@ class PerfAgent:
     def _format_metrics_md(self, metrics: dict[str, Any]) -> str:
         """将性能指标格式化为 Markdown 文本。"""
         lines: list[str] = []
-        # pass_rate -> 百分比
+
         pr = metrics.get("pass_rate")
         if pr is not None:
             try:
@@ -1027,26 +1119,36 @@ class PerfAgent:
                 pr_pct = str(pr)
             lines.append(f"- Pass rate: {pr_pct}")
 
-        # trimmed_mean_target
-        tmr_key = next((k for k in metrics.keys() if k.startswith("trimmed_mean_")), None)
-        tmr = metrics.get(tmr_key) if tmr_key else None
-        if tmr is not None and tmr_key:
-            tgt = tmr_key.split("_", 2)[-1]
-            unit = "s" if tgt == "runtime" else ("MB" if tgt == "memory" else "MB*s")
-            if isinstance(tmr, (int, float)):
-                if tmr == float("inf"):
-                    lines.append(f"- Trimmed mean {tgt}: Infinity")
-                else:
-                    lines.append(f"- Trimmed mean {tgt}: {float(tmr):.6f} {unit}")
-            else:
-                val = str(tmr)
-                low = val.strip().lower()
-                if low in ("inf", "+inf", "infinity", "+infinity"):
-                    lines.append(f"- Trimmed mean {tgt}: Infinity")
-                else:
-                    lines.append(f"- Trimmed mean {tgt}: {val} {unit}")
+        def _fmt(val: Any, unit: str) -> str:
+            if isinstance(val, (int, float)):
+                if val == float("inf"):
+                    return "Infinity"
+                if val == float("-inf"):
+                    return "-Infinity"
+                return f"{float(val):.6f} {unit}"
+            s = str(val).strip().lower()
+            if s in ("inf", "+inf", "infinity", "+infinity"):
+                return "Infinity"
+            if s in ("-inf", "-infinity"):
+                return "-Infinity"
+            if s == "nan":
+                return "NaN"
+            try:
+                return f"{float(val):.6f} {unit}"
+            except Exception:
+                return f"{val} {unit}"
 
-        # 错误信息（仅在失败时存在）
+        if "runtime" in metrics:
+            lines.append(f"- Runtime: {_fmt(metrics.get('runtime'), 's')}")
+        if "memory" in metrics:
+            lines.append(f"- Memory: {_fmt(metrics.get('memory'), 'MB')}")
+        if "integral" in metrics:
+            lines.append(f"- Integral: {_fmt(metrics.get('integral'), 'MB*s')}")
+
+        tgt = metrics.get("target")
+        if tgt is not None:
+            lines.append(f"- Target: {tgt}")
+
         err = metrics.get("error")
         if err:
             lines.append(f"- Error: {err}")
@@ -1100,8 +1202,6 @@ class PerfAgent:
         return (
             "## Program Update\n"
             f"- Iteration: {iteration}\n"
-            f"- Code changed: {'yes' if code_changed else 'no'}\n"
-            f"- Diff size: {diff_size} chars\n\n"
             "## Current Program\n" + prog_text + "\n\n"
             "## Current Metrics\n" + metrics_md + "\n\n"
             "## Current Artifacts\n" + artifacts_md

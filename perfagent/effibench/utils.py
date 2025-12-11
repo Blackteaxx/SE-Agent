@@ -63,27 +63,59 @@ LANGUAGE_REGISTRY = {
     "mysql": {"id": 3, "verbose_name": "MySQL", "md_langs": ["mysql", "sql"]},
     "c": {"id": 4, "verbose_name": "C", "md_langs": ["c"]},
     "csharp": {"id": 5, "verbose_name": "C#", "md_langs": ["cs", "csharp", "c#"]},
-    "javascript": {"id": 6, "verbose_name": "JavaScript", "md_langs": ["js", "javascript", "node"]},
-    "ruby": {"id": 7, "verbose_name": "Ruby", "md_langs": ["rb", "ruby", "jruby", "macruby", "rake", "rbx"]},
-    "bash": {"id": 8, "verbose_name": "Bash", "md_langs": ["sh", "bash", "shell", "shell-script", "zsh"]},
+    "javascript": {
+        "id": 6,
+        "verbose_name": "JavaScript",
+        "md_langs": ["js", "javascript", "node"],
+    },
+    "ruby": {
+        "id": 7,
+        "verbose_name": "Ruby",
+        "md_langs": ["rb", "ruby", "jruby", "macruby", "rake", "rbx"],
+    },
+    "bash": {
+        "id": 8,
+        "verbose_name": "Bash",
+        "md_langs": ["sh", "bash", "shell", "shell-script", "zsh"],
+    },
     "swift": {"id": 9, "verbose_name": "Swift", "md_langs": ["swift"]},
     "golang": {"id": 10, "verbose_name": "Go", "md_langs": ["golang", "go"]},
     "python3": {"id": 11, "verbose_name": "Python3", "md_langs": ["python", "py"]},
     "scala": {"id": 12, "verbose_name": "Scala", "md_langs": ["scala"]},
     "kotlin": {"id": 13, "verbose_name": "Kotlin", "md_langs": ["kotlin"]},
     "mssql": {"id": 14, "verbose_name": "MS SQL Server", "md_langs": ["tsql", "mssql"]},
-    "oraclesql": {"id": 15, "verbose_name": "Oracle", "md_langs": ["plsql", "oraclesql"]},
+    "oraclesql": {
+        "id": 15,
+        "verbose_name": "Oracle",
+        "md_langs": ["plsql", "oraclesql"],
+    },
     "rust": {"id": 18, "verbose_name": "Rust", "md_langs": ["rust", "rs"]},
     "php": {"id": 19, "verbose_name": "PHP", "md_langs": ["php"]},
-    "typescript": {"id": 20, "verbose_name": "TypeScript", "md_langs": ["ts", "typescript"]},
+    "typescript": {
+        "id": 20,
+        "verbose_name": "TypeScript",
+        "md_langs": ["ts", "typescript"],
+    },
     "racket": {"id": 21, "verbose_name": "Racket", "md_langs": ["racket"]},
     "erlang": {"id": 22, "verbose_name": "Erlang", "md_langs": ["erlang"]},
     "elixir": {"id": 23, "verbose_name": "Elixir", "md_langs": ["elixir"]},
     "dart": {"id": 24, "verbose_name": "Dart", "md_langs": ["dart"]},
-    "pythondata": {"id": 25, "verbose_name": "Pandas", "md_langs": ["pandas", "pythondata"]},
+    "pythondata": {
+        "id": 25,
+        "verbose_name": "Pandas",
+        "md_langs": ["pandas", "pythondata"],
+    },
     "react": {"id": 26, "verbose_name": "React", "md_langs": ["jsx", "react"]},
-    "vanillajs": {"id": 27, "verbose_name": "Vanilla JS", "md_langs": ["js", "javascript", "vanillajs"]},
-    "postgresql": {"id": 28, "verbose_name": "PostgreSQL", "md_langs": ["postgres", "postgresql", "pgsql"]},
+    "vanillajs": {
+        "id": 27,
+        "verbose_name": "Vanilla JS",
+        "md_langs": ["js", "javascript", "vanillajs"],
+    },
+    "postgresql": {
+        "id": 28,
+        "verbose_name": "PostgreSQL",
+        "md_langs": ["postgres", "postgresql", "pgsql"],
+    },
     "cangjie": {"id": 29, "verbose_name": "Cangjie", "md_langs": ["cangjie"]},
 }
 
@@ -134,7 +166,10 @@ def get_lang_by_md_lang(md_lang: str) -> str | None:
     """
     if md_lang in LANGUAGE_REGISTRY["python3"]["md_langs"]:
         return "python3"
-    return next((key for key, value in LANGUAGE_REGISTRY.items() if md_lang in value["md_langs"]), None)
+    return next(
+        (key for key, value in LANGUAGE_REGISTRY.items() if md_lang in value["md_langs"]),
+        None,
+    )
 
 
 @cache
@@ -144,7 +179,8 @@ def get_lang_by_verbose_name(verbose_name: str) -> str | None:
     Returns None if not found.
     """
     return next(
-        (key for key, value in LANGUAGE_REGISTRY.items() if verbose_name.lower() == value["verbose_name"].lower()), None
+        (key for key, value in LANGUAGE_REGISTRY.items() if verbose_name.lower() == value["verbose_name"].lower()),
+        None,
     )
 
 
@@ -421,9 +457,17 @@ def prune_package_imports(code: str, lang: str) -> str:
     # Define language-specific import patterns and special processing rules
     patterns = {
         "python3": [r"^\s*import\s+.*$", r"^\s*from\s+\w+.*\s+import.*$"],
-        "javascript": [r"^\s*import\s+.*$", r"^\s*(const|let|var)\s+.*?=\s*require\(.*$", r"^\s*require\(.*$"],
+        "javascript": [
+            r"^\s*import\s+.*$",
+            r"^\s*(const|let|var)\s+.*?=\s*require\(.*$",
+            r"^\s*require\(.*$",
+        ],
         "java": [r"^\s*import\s+.*$"],
-        "cpp": [r"^\s*#include\s+.*$", r"^\s*using\s+namespace\s+.*$", r"^\s*using\s+\w+::.*$"],
+        "cpp": [
+            r"^\s*#include\s+.*$",
+            r"^\s*using\s+namespace\s+.*$",
+            r"^\s*using\s+\w+::.*$",
+        ],
         "ruby": [r"^\s*(require|require_relative)\s+.*$"],
         "golang": [r"^\s*import\s+.*$", r"^\s*package\s+main\s*$"],
     }
@@ -553,7 +597,11 @@ def rename_java_class_to_main(code: str) -> str:
         return code  # Already named Main
 
     # Replace the class name with Main
-    code = re.sub(r"public\s+class\s+" + re.escape(original_class_name) + r"\b", "public class Main", code)
+    code = re.sub(
+        r"public\s+class\s+" + re.escape(original_class_name) + r"\b",
+        "public class Main",
+        code,
+    )
 
     # Replace any constructor declarations
     code = re.sub(r"\b" + re.escape(original_class_name) + r"\s*\(", "Main(", code)
@@ -610,9 +658,30 @@ def load_json_file(path: Path | str):
         raise
 
 
+def _sanitize_for_json(obj: Any):
+    import math
+
+    try:
+        import numpy as np
+    except Exception:
+        np = None
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if np is not None and isinstance(obj, (np.floating, np.integer)):
+        return _sanitize_for_json(obj.item())
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_sanitize_for_json(v) for v in obj]
+    return obj
+
+
 def save_json_file(path: Path | str, data, indent=4):
     path = Path(path)
-    path.write_text(json.dumps(data, indent=indent))
+    clean = _sanitize_for_json(data)
+    path.write_text(json.dumps(clean, indent=indent, allow_nan=False))
 
 
 def retry(func=None, max_retries=6, backoff_factor=2, error_types=(Exception,)):
@@ -803,7 +872,13 @@ def get_problem_key_from_data(data: dict) -> tuple[str | None, str, str]:
     return source, str(problem_id), title_slug
 
 
-def pack_problems(input_dir: Path, output_file: Path, overwrite: bool, include: str = "*.json", exclude: str = None):
+def pack_problems(
+    input_dir: Path,
+    output_file: Path,
+    overwrite: bool,
+    include: str = "*.json",
+    exclude: str = None,
+):
     """Pack individual problem JSON files into a single JSON file as a dictionary.
 
     Args:
@@ -964,7 +1039,11 @@ def parse_distribution(
     try:
         dist_data_raw = json.loads(dist_str)
     except json.JSONDecodeError:
-        log(f"Failed to decode JSON for {dist_name}: '{dist_str[:100]}...'", lang=lang, fg="red")
+        log(
+            f"Failed to decode JSON for {dist_name}: '{dist_str[:100]}...'",
+            lang=lang,
+            fg="red",
+        )
         return None  # Critical error, cannot parse
 
     if isinstance(dist_data_raw, list):
@@ -977,13 +1056,21 @@ def parse_distribution(
         dist_data_raw = dist_data_raw["distribution"]
         is_origin_format = True
     else:
-        log(f"{dist_name} has an unexpected structure: '{dist_str[:100]}...'", lang=lang, fg="red")
+        log(
+            f"{dist_name} has an unexpected structure: '{dist_str[:100]}...'",
+            lang=lang,
+            fg="red",
+        )
         return None  # Critical error, unrecognized structure
 
     dist_data: list[list[Any]] = []
     for i, item in enumerate(dist_data_raw):
         if not isinstance(item, list):
-            log(f"{dist_name} item #{i} is not a list: {item}. Unexpected structure.", lang=lang, fg="yellow")
+            log(
+                f"{dist_name} item #{i} is not a list: {item}. Unexpected structure.",
+                lang=lang,
+                fg="yellow",
+            )
             return None  # Critical error, unrecognized structure
 
         try:
@@ -1009,7 +1096,11 @@ def parse_distribution(
                     return None  # Critical error, unrecognized structure
 
         except (ValueError, TypeError) as e:
-            log(f"{dist_name} item #{i} parsing error for '{item}': {e}. Unexpected structure.", lang=lang, fg="yellow")
+            log(
+                f"{dist_name} item #{i} parsing error for '{item}': {e}. Unexpected structure.",
+                lang=lang,
+                fg="yellow",
+            )
             return None  # Critical error, unrecognized structure
 
     return sorted(dist_data, key=lambda x: x[0])

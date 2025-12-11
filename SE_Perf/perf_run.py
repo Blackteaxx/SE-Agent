@@ -35,6 +35,7 @@ from core.utils.traj_pool_manager import TrajPoolManager
 from core.utils.trajectory_processor import TrajectoryProcessor
 from operators import create_operator
 from perf_config import LocalMemoryConfig, PerfRunCLIConfig, SEPerfRunSEConfig
+
 from perfagent.run import load_instance_data
 
 # --- 辅助函数 ---
@@ -229,7 +230,7 @@ def write_iteration_preds(base_dir: Path, logger) -> Path | None:
             predictions[str(instance_id)] = {
                 "code": code,
                 "passed": is_passed,
-                "runtime": final_perf,
+                "performance": final_perf,
             }
 
         preds_path = base_dir / "preds.json"
@@ -279,9 +280,9 @@ def aggregate_all_iterations_preds(root_output_dir: Path, logger) -> Path | None
                     passed = bool(info.get("passed", False))
                     # 未通过的实例，code 置为空字符串
                     code = info.get("code", "") if passed else ""
-                    runtime = info.get("runtime")
+                    performance = info.get("performance")
 
-                    entry = {"iteration": iter_num, "code": code, "runtime": runtime}
+                    entry = {"iteration": iter_num, "code": code, "performance": performance}
                     aggregated_data.setdefault(str(instance_id), []).append(entry)
                 except Exception:
                     continue

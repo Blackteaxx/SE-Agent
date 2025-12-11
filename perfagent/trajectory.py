@@ -161,16 +161,6 @@ class TrajectoryLogger:
         # 实时保存轨迹
         self.save_trajectory()
 
-    def log_performance_evaluation(self, step_id: int, performance_data: dict[str, Any]) -> None:
-        """记录性能评估结果"""
-        if step_id <= 0 or step_id > len(self.steps):
-            return
-
-        step = self.steps[step_id - 1]
-        step.performance_metrics = performance_data
-
-        self.logger.info(f"步骤 {step_id} 性能评估: {performance_data.get('trimmed_mean', 'N/A')}")
-
     def finalize(
         self,
         success: bool = True,
@@ -284,36 +274,6 @@ class TrajectoryLogger:
             self.logger.error(f"保存轨迹文件失败: {e}")
             raise
 
-    def get_trajectory_summary(self) -> dict[str, Any]:
-        """获取轨迹摘要"""
-        successful_steps = [step for step in self.steps if not step.error]
-        failed_steps = [step for step in self.steps if step.error]
-
-        performance_improvements = []
-        for step in self.steps:
-            if step.performance_metrics and "trimmed_mean" in step.performance_metrics:
-                performance_improvements.append(step.performance_metrics["trimmed_mean"])
-
-        # 分析性能趋势
-        performance_trend = "stable"
-        if len(performance_improvements) >= 2:
-            if performance_improvements[-1] < performance_improvements[0]:
-                performance_trend = "improving"
-            elif performance_improvements[-1] > performance_improvements[0]:
-                performance_trend = "degrading"
-        elif len(successful_steps) > len(failed_steps):
-            performance_trend = "improving"
-
-        return {
-            "instance_id": self.metadata.instance_id,
-            "total_steps": len(self.steps),
-            "successful_steps": len(successful_steps),
-            "failed_steps": len(failed_steps),
-            "performance_trend": performance_trend,
-            "final_success": self.metadata.success,
-            "total_duration": self._calculate_total_duration(),
-        }
-
     def _calculate_total_duration(self) -> float:
         """计算总持续时间"""
         if not self.metadata.end_time:
@@ -364,3 +324,39 @@ class TrajectoryLogger:
         logger.history = data.get("history", [])
 
         return logger
+
+    def get_trajectory_summary(self) -> dict[str, Any]:
+        """获取轨迹摘要（兼容新结构与旧结构）"""
+        successful_steps = [step for step in self.steps if not step.error]
+        failed_steps = [step for step in self.steps if step.error]
+
+        performance_improvements = []
+        for step in self.steps:
+            if step.performance_metrics:
+                mm = step.performance_metrics.get("trimmed_mean")
+                if mm is None:
+                    perf = step.performance_metrics.get("performance_analysis", {})
+                    tgt = self.metadata.optimization_target or "runtime"
+                    an = perf.get("analysis", {})
+                    mm = an.get(tgt, {}).get("trimmed_mean")
+                if mm is not None:
+                    performance_improvements.append(mm)
+
+        performance_trend = "stable"
+        if len(performance_improvements) >= 2:
+            if performance_improvements[-1] < performance_improvements[0]:
+                performance_trend = "improving"
+            elif performance_improvements[-1] > performance_improvements[0]:
+                performance_trend = "degrading"
+        elif len(successful_steps) > len(failed_steps):
+            performance_trend = "improving"
+
+        return {
+            "instance_id": self.metadata.instance_id,
+            "total_steps": len(self.steps),
+            "successful_steps": len(successful_steps),
+            "failed_steps": len(failed_steps),
+            "performance_trend": performance_trend,
+            "final_success": self.metadata.success,
+            "total_duration": self._calculate_total_duration(),
+        }
