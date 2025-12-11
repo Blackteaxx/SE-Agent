@@ -1,10 +1,15 @@
 import chromadb
 import os
+from argparse import ArgumentParser
 
 # Define the path to the ChromaDB directory
 # The path provided by the user was: \data\CodeEfficiency\SE-Agent\trajectories_perf\deepseek-v3\deepseek-v3-test-global_memory-example_20251206_133305\global_memory
 # Converting to Linux path format
-PERSIST_DIRECTORY = "/data/CodeEfficiency/SE-Agent/trajectories_perf/deepseek-v3.1/deepseek-v3.1-Plan-AutoSelect-LocalMemory-ReuseGlobalMemory/global_memory"
+parser = ArgumentParser()
+parser.add_argument("--db_dir", type=str)
+args = parser.parse_args()
+
+PERSIST_DIRECTORY = args.db_dir
 
 
 def inspect_chromadb(persist_directory):
