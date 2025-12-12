@@ -77,7 +77,7 @@ class LocalMemoryManager:
         self,
         memory_path: str | Path,
         llm_client: LLMClient | None = None,
-        token_limit: int = 5000,
+        token_limit: int = 3000,
         format_mode: str = "short",
     ) -> None:
         """

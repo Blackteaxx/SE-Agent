@@ -508,14 +508,7 @@ class TrajPoolManager:
                     target_solution_text=target_solution_text,
                 )
             else:
-                summary = {
-                    "meta": {"is_fallback": True, "reason": "summary_disabled"},
-                    "approach_summary": "Summary disabled by config.",
-                    "strategy": None,
-                    "specific_techniques": None,
-                    "modified_files": [],
-                    "key_changes": [],
-                }
+                summary = {}
 
             # 解析 .tra 原始内容为 JSON 对象，如果失败则作为原始文本
             raw_content = item.get("trajectory_content")
