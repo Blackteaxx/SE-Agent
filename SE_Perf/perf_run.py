@@ -27,7 +27,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 # 导入 SE 核心模块
 from core.global_memory.utils.config import GlobalMemoryConfig
 from core.utils.global_memory_manager import GlobalMemoryManager
-from core.utils.llm_client import LLMClient
 from core.utils.local_memory_manager import LocalMemoryManager
 from core.utils.se_logger import get_se_logger, setup_se_logging
 from core.utils.traj_extractor import TrajExtractor
@@ -218,6 +217,7 @@ def write_iteration_preds(base_dir: Path, logger) -> Path | None:
             instance_id = data.get("instance_id", instance_dir.name)
             code = data.get("optimized_code", "")
             final_perf = data.get("final_performance")
+            final_metrics = data.get("final_metrics") or {}
 
             # 只要 final_perf 不是无穷大，就认为通过
             is_passed = False
@@ -231,6 +231,7 @@ def write_iteration_preds(base_dir: Path, logger) -> Path | None:
                 "code": code,
                 "passed": is_passed,
                 "performance": final_perf,
+                "final_metrics": final_metrics,
             }
 
         preds_path = base_dir / "preds.json"
@@ -281,8 +282,27 @@ def aggregate_all_iterations_preds(root_output_dir: Path, logger) -> Path | None
                     # 未通过的实例，code 置为空字符串
                     code = info.get("code", "") if passed else ""
                     performance = info.get("performance")
+                    metrics_val = info.get("final_metrics")
 
-                    entry = {"iteration": iter_num, "code": code, "performance": performance}
+                    # 若缺少 metrics，尝试从该迭代的 result.json 回退读取
+                    try:
+                        if not isinstance(metrics_val, dict) or not metrics_val:
+                            res_path = Path(iter_dir) / str(instance_id) / "result.json"
+                            if res_path.exists():
+                                with open(res_path, encoding="utf-8") as rf:
+                                    rj = json.load(rf)
+                                fm = rj.get("final_metrics")
+                                if isinstance(fm, dict):
+                                    metrics_val = fm
+                    except Exception:
+                        pass
+
+                    entry = {
+                        "iteration": iter_num,
+                        "code": code,
+                        "performance": performance,
+                        "final_metrics": metrics_val,
+                    }
                     aggregated_data.setdefault(str(instance_id), []).append(entry)
                 except Exception:
                     continue
@@ -291,11 +311,17 @@ def aggregate_all_iterations_preds(root_output_dir: Path, logger) -> Path | None
         with open(agg_path, "w", encoding="utf-8") as f:
             json.dump(aggregated_data, f, indent=2, ensure_ascii=False)
 
-        logger.info(f"汇总所有迭代预测结果: {agg_path}")
+        if logger:
+            logger.info(f"汇总所有迭代预测结果: {agg_path}")
+        else:
+            print(f"汇总所有迭代预测结果: {agg_path}")
         return agg_path
 
     except Exception as e:
-        logger.warning(f"汇总 preds.json 失败: {e}")
+        if logger:
+            logger.warning(f"汇总 preds.json 失败: {e}")
+        else:
+            print(f"汇总 preds.json 失败: {e}")
         return None
 
 
@@ -335,7 +361,7 @@ def write_final_json_from_preds(aggregated_preds_path: Path, root_output_dir: Pa
 
             # 找到 runtime 最小的条目
             try:
-                best_entry = min(entries, key=lambda e: _parse_runtime(e.get("runtime")))
+                best_entry = min(entries, key=lambda e: _parse_runtime(e.get("performance", e.get("runtime"))))
             except ValueError:
                 continue
 
@@ -345,11 +371,15 @@ def write_final_json_from_preds(aggregated_preds_path: Path, root_output_dir: Pa
         with open(final_path, "w", encoding="utf-8") as f:
             json.dump(final_result_map, f, indent=2, ensure_ascii=False)
 
-        logger.info(f"生成最终结果 final.json: {final_path}")
+        if logger:
+            logger.info(f"生成最终结果 final.json: {final_path}")
         return final_path
 
     except Exception as e:
-        logger.warning(f"生成 final.json 失败: {e}")
+        if logger:
+            logger.warning(f"生成 final.json 失败: {e}")
+        else:
+            print(f"生成 final.json 失败: {e}")
         return None
 
 

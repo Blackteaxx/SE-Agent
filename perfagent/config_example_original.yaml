@@ -12,6 +12,12 @@ model:
   max_input_tokens: 10000
   max_output_tokens: 10000
   use_llm: false
+  # LLM 请求控制与日志开关
+  request_timeout: 60
+  max_retries: 6
+  retry_delay: 2.0
+  retry_backoff_factor: 2.0
+  retry_jitter: 0.5
 
 # 优化配置
 optimization:

@@ -38,10 +38,11 @@ def collect_outputs(root_dir: str | Path, instance_names: list[str] | None = Non
                     for e in entries or []:
                         it = e.get("iteration")
                         code = e.get("code") or ""
-                        runtime = e.get("runtime")
+                        performance = e.get("performance")
+                        metrics = e.get("final_metrics") or {}
                         if it is None:
                             continue
-                        iteration_map[str(it)] = {"code": code, "runtime": runtime}
+                        iteration_map[str(it)] = {"code": code, "performance": performance, "final_metrics": metrics}
                     problem = None
                     try:
                         pinfo = pool_data.get(inst_id) or {}

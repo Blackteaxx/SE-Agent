@@ -103,6 +103,8 @@ class PerfAgent:
                 "request_timeout": self.config.model.request_timeout,
                 "max_retries": self.config.model.max_retries,
                 "retry_delay": self.config.model.retry_delay,
+                "retry_backoff_factor": getattr(self.config.model, "retry_backoff_factor", 2.0),
+                "retry_jitter": getattr(self.config.model, "retry_jitter", 0.5),
                 "log_inputs_outputs": self.config.model.log_inputs_outputs,
                 "log_sanitize": self.config.model.log_sanitize,
             }

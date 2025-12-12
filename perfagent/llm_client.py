@@ -5,16 +5,16 @@ LLM 客户端，支持多种模型和API端点
 import json
 import logging
 import os
+import random
 import threading
 import time
-import random
 from pathlib import Path
 from typing import Any
 
 from openai import OpenAI
 
 try:
-    from openai import APIError, RateLimitError, APITimeoutError, APIConnectionError, BadRequestError
+    from openai import APIConnectionError, APIError, APITimeoutError, BadRequestError, RateLimitError
 except Exception:
     APIError = Exception
     RateLimitError = Exception
@@ -31,7 +31,7 @@ class LLMClient:
     def __init__(
         self,
         model_config: dict[str, Any],
-        max_retries: int = 3,
+        max_retries: int = 10,
         retry_delay: float = 1.5,
         retry_backoff_factor: float = 2.0,
         retry_jitter: float = 0.3,
@@ -291,9 +291,18 @@ class LLMClient:
                 last_err = e
                 attempt += 1
                 should_retry = attempt < self.max_retries and self._is_retryable_error(e)
-                self.logger.warning(f"LLM调用失败: {e}; attempt={attempt}/{self.max_retries}; retry={should_retry}")
+                try:
+                    self.logger.warning(
+                        f"LLM调用失败: {e}; attempt={attempt}/{self.max_retries}; retry={should_retry}; "
+                        f"delay={self.retry_delay}s, backoff={self.retry_backoff_factor}, jitter<={self.retry_jitter}"
+                    )
+                except Exception:
+                    pass
                 if should_retry:
-                    time.sleep(self._compute_sleep(attempt))
+                    try:
+                        time.sleep(self._compute_sleep(attempt))
+                    except Exception:
+                        time.sleep(self.retry_delay)
                 else:
                     break
 

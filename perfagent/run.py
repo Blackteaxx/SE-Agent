@@ -131,7 +131,7 @@ def run_single_instance(config: PerfAgentConfig, instance_path: Path, base_dir: 
                 )
             pred_file = instance_output_dir / f"{task_name}.pred"
             with open(pred_file, "w", encoding="utf-8") as pf:
-                pf.write((submission_code or ""))
+                pf.write(submission_code or "")
             logger.info(f"写出预测结果: {pred_file}")
         except Exception as e:
             logger.error(f"写出 .pred 失败: {e}")
@@ -243,6 +243,8 @@ def main():
     parser.add_argument("--llm-timeout", type=float, help="LLM 请求超时（秒）")
     parser.add_argument("--llm-max-retries", type=int, help="LLM 最大重试次数")
     parser.add_argument("--llm-retry-delay", type=float, help="LLM 重试初始等待（秒）")
+    parser.add_argument("--llm-retry-backoff", type=float, help="LLM 重试指数退避因子")
+    parser.add_argument("--llm-retry-jitter", type=float, help="LLM 重试抖动秒数上限")
     parser.add_argument("--llm-log-io", action="store_true", help="记录 LLM 输入与输出（可能包含代码）")
     parser.add_argument("--llm-log-sanitize", action="store_true", help="记录前进行敏感信息脱敏")
     parser.add_argument("--early-stop-no-improve", type=int, help="连续未改进次数达到阈值后提前停止")

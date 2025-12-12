@@ -27,8 +27,10 @@ class ModelConfig:
     use_llm: bool = False
     # LLM 客户端增强参数
     request_timeout: float = 60.0
-    max_retries: int = 3
-    retry_delay: float = 1.5
+    max_retries: int = 10
+    retry_delay: float = 2.0
+    retry_backoff_factor: float = 2.0
+    retry_jitter: float = 0.5
     log_inputs_outputs: bool = True
     log_sanitize: bool = True
 
@@ -171,6 +173,10 @@ class PerfAgentConfig:
             self.model.max_retries = args.llm_max_retries
         if getattr(args, "llm_retry_delay", None) is not None:
             self.model.retry_delay = args.llm_retry_delay
+        if getattr(args, "llm_retry_backoff", None) is not None:
+            self.model.retry_backoff_factor = args.llm_retry_backoff
+        if getattr(args, "llm_retry_jitter", None) is not None:
+            self.model.retry_jitter = args.llm_retry_jitter
         if getattr(args, "llm_log_io", False):
             self.model.log_inputs_outputs = True
         if getattr(args, "llm_log_sanitize", False):

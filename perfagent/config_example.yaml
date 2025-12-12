@@ -15,8 +15,10 @@ model:
   use_llm: false
   # LLM 请求控制与日志开关
   request_timeout: 60
-  max_retries: 3
-  retry_delay: 1.5
+  max_retries: 6
+  retry_delay: 2.0
+  retry_backoff_factor: 2.0
+  retry_jitter: 0.5
   log_inputs_outputs: true
   log_sanitize: true
 
@@ -165,4 +167,3 @@ language_cfg:
     - "java"
     - "javascript"
     - "golang"
-
