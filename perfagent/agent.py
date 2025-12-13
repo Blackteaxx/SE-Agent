@@ -14,6 +14,7 @@ from typing import Any
 from .config import PerfAgentConfig
 from .diff_applier import DiffApplier
 from .effibench.benchmark import run_performance_benchmark
+from .effibench.utils import EFFIBENCH_REGISTRY
 from .llm_client import LLMClient
 from .trajectory import TrajectoryLogger
 from .utils.log import get_se_logger
@@ -84,6 +85,28 @@ class EffiBenchXInstance:
             "evaluator": self.evaluator,
             "task_name": self.task_name,
         }
+
+
+@dataclass
+class RunContext:
+    """保存单次运行的上下文状态"""
+
+    instance: EffiBenchXInstance
+    trajectory: TrajectoryLogger
+    language: str
+    optimization_target: str
+    initial_code: str
+    current_code: str
+    best_code: str
+    best_performance: float
+    best_pass_rate: float
+    current_benchmark_results: dict[str, Any]
+    best_benchmark_results: dict[str, Any]
+    optimization_history: list[dict[str, Any]]
+    iter_offset: int
+    no_improve_count: int = 0
+    test_cases: list[dict[str, Any]] = field(default_factory=list)
+    initial_performance_value: float = float("inf")
 
 
 class PerfAgent:
@@ -233,121 +256,62 @@ class PerfAgent:
         """检测编程语言（仅保留以兼容调用路径，但不使用）"""
         return self._normalize_language(self.config.language_cfg.language)
 
+    def _create_empty_performance_metrics(self) -> dict[str, Any]:
+        """创建一个空的性能分析指标结构"""
+        return {
+            "original_n": 0,
+            "n": 0,
+            "runtime": float("inf"),
+            "memory": float("inf"),
+            "integral": float("inf"),
+            "pass_rate": 0.0,
+            "passed": False,
+            "analysis": {
+                "runtime": self._create_empty_metric_analysis(),
+                "memory": self._create_empty_metric_analysis(),
+                "integral": self._create_empty_metric_analysis(),
+            },
+        }
+
+    def _create_empty_metric_analysis(self) -> dict[str, Any]:
+        """创建一个空的单项指标分析结构"""
+        return {
+            "original_n": 0,
+            "n": 0,
+            "mean": float("inf"),
+            "std": float("inf"),
+            "min": float("inf"),
+            "max": float("inf"),
+            "max_diff": float("inf"),
+            "95%_CI": (float("inf"), float("inf")),
+            "trimmed_mean": float("inf"),
+        }
+
+    def _create_default_performance_result(self, consistent: bool = True) -> dict[str, Any]:
+        """创建默认的性能评估结果结构"""
+        return {
+            "performance_analysis": self._create_empty_performance_metrics(),
+            "first_run_details": [],
+            "failed_test_details": [],
+            "failed_submission_exit_codes": [],
+            "pass_rates": [],
+            "pass_rate_consistent": consistent,
+        }
+
     def _evaluate_performance(
-        self, language: str, code: str, test_cases: list[dict[str, Any]], instance: Any
+        self, language: str, code: str, test_cases: list[dict], instance: EffiBenchXInstance
     ) -> dict[str, Any]:
         """评估代码性能，保持参数兼容"""
 
         # 如果代码与占位符代码相同，返回默认失败结构
         if code == self._get_default_placeholder(language):
-            perf = {
-                "original_n": 0,
-                "n": 0,
-                "runtime": float("inf"),
-                "memory": float("inf"),
-                "integral": float("inf"),
-                "pass_rate": 0.0,
-                "passed": False,
-                "analysis": {
-                    "runtime": {
-                        "original_n": 0,
-                        "n": 0,
-                        "mean": float("inf"),
-                        "std": float("inf"),
-                        "min": float("inf"),
-                        "max": float("inf"),
-                        "max_diff": float("inf"),
-                        "95%_CI": (float("inf"), float("inf")),
-                        "trimmed_mean": float("inf"),
-                    },
-                    "memory": {
-                        "original_n": 0,
-                        "n": 0,
-                        "mean": float("inf"),
-                        "std": float("inf"),
-                        "min": float("inf"),
-                        "max": float("inf"),
-                        "max_diff": float("inf"),
-                        "95%_CI": (float("inf"), float("inf")),
-                        "trimmed_mean": float("inf"),
-                    },
-                    "integral": {
-                        "original_n": 0,
-                        "n": 0,
-                        "mean": float("inf"),
-                        "std": float("inf"),
-                        "min": float("inf"),
-                        "max": float("inf"),
-                        "max_diff": float("inf"),
-                        "95%_CI": (float("inf"), float("inf")),
-                        "trimmed_mean": float("inf"),
-                    },
-                },
-            }
-            return {
-                "performance_analysis": perf,
-                "first_run_details": [],
-                "failed_submission_exit_codes": [],
-                "pass_rates": [],
-                "pass_rate_consistent": True,
-            }
+            return self._create_default_performance_result(consistent=True)
 
         # 若 evaluator 或测试用例缺失/格式不合法，直接返回默认结构以避免长时间的后端调用
         evaluator = getattr(instance, "evaluator", None)
         tc_valid = bool(test_cases) and isinstance(test_cases, list) and isinstance(test_cases[0], dict)
         if not evaluator or not tc_valid:
-            perf = {
-                "original_n": 0,
-                "n": 0,
-                "runtime": float("inf"),
-                "memory": float("inf"),
-                "integral": float("inf"),
-                "pass_rate": 0.0,
-                "passed": False,
-                "analysis": {
-                    "runtime": {
-                        "original_n": 0,
-                        "n": 0,
-                        "mean": float("inf"),
-                        "std": float("inf"),
-                        "min": float("inf"),
-                        "max": float("inf"),
-                        "max_diff": float("inf"),
-                        "95%_CI": (float("inf"), float("inf")),
-                        "trimmed_mean": float("inf"),
-                    },
-                    "memory": {
-                        "original_n": 0,
-                        "n": 0,
-                        "mean": float("inf"),
-                        "std": float("inf"),
-                        "min": float("inf"),
-                        "max": float("inf"),
-                        "max_diff": float("inf"),
-                        "95%_CI": (float("inf"), float("inf")),
-                        "trimmed_mean": float("inf"),
-                    },
-                    "integral": {
-                        "original_n": 0,
-                        "n": 0,
-                        "mean": float("inf"),
-                        "std": float("inf"),
-                        "min": float("inf"),
-                        "max": float("inf"),
-                        "max_diff": float("inf"),
-                        "95%_CI": (float("inf"), float("inf")),
-                        "trimmed_mean": float("inf"),
-                    },
-                },
-            }
-            return {
-                "performance_analysis": perf,
-                "first_run_details": [],
-                "failed_test_details": [],
-                "failed_submission_exit_codes": [],
-                "pass_rates": [],
-                "pass_rate_consistent": True,
-            }
+            return self._create_default_performance_result(consistent=True)
 
         # 级联评估：先用 benchmark 进行一次运行（num_runs=1），若未全部通过则直接返回
         try:
@@ -365,57 +329,7 @@ class PerfAgent:
         except Exception as e:
             # 单次运行失败则回退到默认失败结构，保持与现有测试兼容
             self.logger.warning(f"单次运行评估失败，返回默认性能结构: {e}")
-            perf = {
-                "original_n": 0,
-                "n": 0,
-                "runtime": float("inf"),
-                "memory": float("inf"),
-                "integral": float("inf"),
-                "pass_rate": 0.0,
-                "passed": False,
-                "analysis": {
-                    "runtime": {
-                        "original_n": 0,
-                        "n": 0,
-                        "mean": float("inf"),
-                        "std": float("inf"),
-                        "min": float("inf"),
-                        "max": float("inf"),
-                        "max_diff": float("inf"),
-                        "95%_CI": (float("inf"), float("inf")),
-                        "trimmed_mean": float("inf"),
-                    },
-                    "memory": {
-                        "original_n": 0,
-                        "n": 0,
-                        "mean": float("inf"),
-                        "std": float("inf"),
-                        "min": float("inf"),
-                        "max": float("inf"),
-                        "max_diff": float("inf"),
-                        "95%_CI": (float("inf"), float("inf")),
-                        "trimmed_mean": float("inf"),
-                    },
-                    "integral": {
-                        "original_n": 0,
-                        "n": 0,
-                        "mean": float("inf"),
-                        "std": float("inf"),
-                        "min": float("inf"),
-                        "max": float("inf"),
-                        "max_diff": float("inf"),
-                        "95%_CI": (float("inf"), float("inf")),
-                        "trimmed_mean": float("inf"),
-                    },
-                },
-            }
-            return {
-                "performance_analysis": perf,
-                "first_run_details": [],
-                "failed_test_details": [],
-                "pass_rates": [],
-                "pass_rate_consistent": True,
-            }
+            return self._create_default_performance_result(consistent=True)
 
         # 计算单次运行通过率（优先使用返回的 pass_rates）
         passed = single_run_summary.get("performance_analysis").get("passed", False)
@@ -440,551 +354,578 @@ class PerfAgent:
             return result
         except Exception as e:
             self.logger.error(f"性能评估失败: {e}")
-            perf = {
-                "original_n": 0,
-                "n": 0,
-                "runtime": float("inf"),
-                "memory": float("inf"),
-                "integral": float("inf"),
-                "passed": False,
-                "pass_rate": 0.0,
-                "analysis": {
-                    "runtime": {
-                        "original_n": 0,
-                        "n": 0,
-                        "mean": float("inf"),
-                        "std": float("inf"),
-                        "min": float("inf"),
-                        "max": float("inf"),
-                        "max_diff": float("inf"),
-                        "95%_CI": (float("inf"), float("inf")),
-                        "trimmed_mean": float("inf"),
-                    },
-                    "memory": {
-                        "original_n": 0,
-                        "n": 0,
-                        "mean": float("inf"),
-                        "std": float("inf"),
-                        "min": float("inf"),
-                        "max": float("inf"),
-                        "max_diff": float("inf"),
-                        "95%_CI": (float("inf"), float("inf")),
-                        "trimmed_mean": float("inf"),
-                    },
-                    "integral": {
-                        "original_n": 0,
-                        "n": 0,
-                        "mean": float("inf"),
-                        "std": float("inf"),
-                        "min": float("inf"),
-                        "max": float("inf"),
-                        "max_diff": float("inf"),
-                        "95%_CI": (float("inf"), float("inf")),
-                        "trimmed_mean": float("inf"),
-                    },
-                },
-            }
-            return {
-                "performance_analysis": perf,
-                "first_run_details": [],
-                "failed_test_details": [],
-                "pass_rates": [],
-                "pass_rate_consistent": False,
-            }
+            return self._create_default_performance_result(consistent=False)
+
+    def _extract_pass_rate(self, results: dict[str, Any]) -> float:
+        """从评估结果中提取通过率"""
+        # 1. 尝试直接获取 pass_rate 字段
+        pass_rate = results.get("performance_analysis", {}).get("pass_rate")
+        try:
+            if pass_rate is not None and isinstance(pass_rate, (int, float)):
+                return float(pass_rate)
+        except Exception:
+            pass
+
+        # 2. 尝试从 pass_rates 列表获取（取最小值，保守策略）
+        pr_list = results.get("pass_rates")
+        try:
+            if isinstance(pr_list, list) and pr_list:
+                return float(min(float(p) for p in pr_list))
+        except Exception:
+            pass
+
+        # 3. 尝试从 first_run_details 计算
+        try:
+            fr = results.get("first_run_details") or []
+            total = len(fr)
+            passed = sum(1 for tc in fr if tc.get("passed", False))
+            return (passed / total) if total > 0 else 0.0
+        except Exception:
+            return 0.0
+
+    def _clean_performance_value(self, val: Any) -> float:
+        """清理性能指标值，转换为 float，处理 inf/nan"""
+        if isinstance(val, (int, float)):
+            return float(val)
+
+        # 尝试处理 numpy 类型或 callable
+        try:
+            item_fn = getattr(val, "item", None)
+            if callable(item_fn):
+                val = item_fn()
+        except Exception:
+            pass
+
+        if isinstance(val, str):
+            s = val.strip().lower()
+            if s in ("inf", "+inf", "infinity", "+infinity"):
+                return float("inf")
+            elif s in ("-inf", "-infinity"):
+                return float("-inf")
+            elif s == "nan":
+                return float("nan")
+            else:
+                try:
+                    return float(val)
+                except Exception:
+                    return float("inf")
+        return float(val) if isinstance(val, (int, float)) else float("inf")
 
     def run(self, instance: EffiBenchXInstance) -> dict[str, Any]:
         """运行性能优化流程（仅使用配置语言，实例为 dataclass）"""
+        try:
+            # 1. 初始化上下文
+            ctx = self._init_run_context(instance)
+            self.logger.info(f"开始优化实例: {ctx.instance.id}")
+
+            # 2. 初始评估
+            self._perform_initial_evaluation(ctx)
+
+            # 3. 优化循环
+            self._process_optimization_loop(ctx)
+
+            # 4. 完成并生成结果
+            return self._finalize_run(ctx)
+
+        except Exception as e:
+            self.logger.error(f"优化过程失败: {e}")
+            # 尝试记录错误轨迹
+            try:
+                # 如果 ctx 存在，尝试用它来结束轨迹
+                if "ctx" in locals():
+                    ctx.trajectory.finalize(success=False, error_message=str(e), final_submission_code=ctx.best_code)
+            except Exception:
+                pass
+            raise
+
+    def _init_run_context(self, instance: EffiBenchXInstance) -> RunContext:
+        """初始化运行上下文"""
         inst = instance
-        # 优先使用文件名（task_name）作为实例 ID，若不存在则回退到 JSON 中的 id
         instance_id = getattr(inst, "task_name", None) or getattr(inst, "id", "unknown")
 
-        # 初始化轨迹记录器（统一日志目录到 config.logging.log_dir）
+        # 初始化轨迹记录器
         trajectory = TrajectoryLogger(
             instance_id,
             self.config.logging.trajectory_dir,
             log_dir=self.config.logging.log_dir,
         )
 
+        language = self._normalize_language(self.config.language_cfg.language)
+        trajectory.metadata.language = language
+        trajectory.metadata.optimization_target = self.config.optimization.target
+
+        # 记录 System Prompt
+        system_prompt = self._build_system_prompt(
+            language=language,
+            optimization_target=self.config.optimization.target,
+            task_description=inst.description_md,
+            task_type=getattr(inst, "type", None),
+            starter_code=getattr(inst, "starter_code", {}).get(language, None),
+        )
+        trajectory.add_history(role="system", content=system_prompt, message_type="system_prompt")
+
+        # 提取初始代码
+        initial_code = self._extract_initial_code(
+            inst, language=language, optimization_target=self.config.optimization.target
+        )
+        if not initial_code:
+            raise ValueError("无法提取初始代码")
+
+        test_cases = self._prepare_test_cases(inst)
+        iter_offset = 1 if self._initial_code_source in ("text", "dir") else 0
+
+        # 初始化历史
+        self.optimization_history = []
+
+        return RunContext(
+            instance=inst,
+            trajectory=trajectory,
+            language=language,
+            optimization_target=self.config.optimization.target,
+            initial_code=initial_code,
+            current_code=initial_code,
+            best_code=initial_code,
+            best_performance=float("inf"),
+            best_pass_rate=0.0,
+            current_benchmark_results={},
+            best_benchmark_results={},
+            optimization_history=self.optimization_history,
+            iter_offset=iter_offset,
+            test_cases=test_cases,
+        )
+
+    def _perform_initial_evaluation(self, ctx: RunContext):
+        """执行初始性能评估"""
+        step_id = ctx.trajectory.start_step(
+            "initial_evaluation", query="Evaluate the initial code performance.", code_snapshot=ctx.current_code
+        )
+
+        initial_performance = self._evaluate_performance(ctx.language, ctx.current_code, ctx.test_cases, ctx.instance)
+
+        ctx.current_benchmark_results = initial_performance
+        ctx.best_benchmark_results = initial_performance
+
+        initial_evaluation_summary = {
+            "performance_analysis": initial_performance.get("performance_analysis", {}),
+            "failed_test_details": initial_performance.get("failed_test_details", [])[:3],
+        }
+
+        summary_text = self._build_summary_text(
+            iteration=1 if ctx.iter_offset else 0,
+            code_changed=False,
+            diff_text=None,
+            benchmark_results=initial_performance,
+            current_program=ctx.current_code,
+        )
+
+        ctx.trajectory.end_step(
+            step_id,
+            response=summary_text,
+            thought="收集初始性能基线以指导后续优化",
+            code_changed=False,
+            performance_metrics=initial_evaluation_summary,
+            code_snapshot=ctx.current_code,
+        )
+
+        ctx.best_pass_rate = self._extract_pass_rate(initial_performance)
+        init_metric = initial_performance.get("performance_analysis", {}).get(ctx.optimization_target, float("inf"))
+
+        ctx.initial_performance_value = self._clean_performance_value(init_metric)
+
+        if ctx.initial_performance_value <= ctx.best_performance:
+            ctx.best_performance = ctx.initial_performance_value
+            ctx.best_code = ctx.current_code
+
+    def _process_optimization_loop(self, ctx: RunContext):
+        """执行优化循环"""
+        remaining_iterations = max(0, self.config.max_iterations - ctx.iter_offset)
+
+        for iteration in range(remaining_iterations):
+            current_iter_num = iteration + 1 + ctx.iter_offset
+            self.logger.info(f"开始第 {current_iter_num} 次迭代")
+
+            should_stop = self._process_single_iteration(ctx, current_iter_num)
+            if should_stop:
+                break
+
+    def _process_single_iteration(self, ctx: RunContext, iteration_num: int) -> bool:
+        """处理单次迭代。返回 True 表示应该停止循环。"""
+        # 1. 生成优化建议
+        opt_prompt = self._build_optimization_prompt(
+            current_program=ctx.current_code,
+            language=ctx.language,
+            benchmark_results=ctx.current_benchmark_results,
+        )
+
+        step_id = ctx.trajectory.start_step(
+            "generate_optimization",
+            query=opt_prompt,
+            code_snapshot=ctx.current_code,
+        )
+
+        # 2. 调用 LLM
+        optimization_response = self._call_llm_for_optimization(ctx, opt_prompt)
+
+        # 3. 提取和应用代码变更
+        diff_text = None
+        optimized_code = None
+
+        if self.config.optimization.code_generation_mode == "direct":
+            optimized_code = self._extract_full_code_from_response(optimization_response)
+            if not optimized_code:
+                self._handle_failed_code_extraction(
+                    ctx, step_id, optimization_response, iteration_num, "无法从响应中提取有效的完整代码"
+                )
+                return False
+        else:
+            diff_text = self._extract_diff_from_response(optimization_response)
+            if not diff_text:
+                self._handle_failed_code_extraction(
+                    ctx, step_id, optimization_response, iteration_num, "无法从响应中提取有效的 diff"
+                )
+                return False
+
+            try:
+                optimized_code = self.diff_applier.apply_diff(ctx.current_code, diff_text)
+            except Exception as e:
+                self._handle_failed_diff_application(
+                    ctx, step_id, optimization_response, diff_text, iteration_num, str(e)
+                )
+                return False
+
+        # 4. 检查代码是否变化
+        self.logger.info(f"Diff apply result: changed={optimized_code != ctx.current_code}")
+        if optimized_code == ctx.current_code:
+            self._handle_no_code_change(ctx, step_id, optimization_response, diff_text, iteration_num)
+            ctx.no_improve_count += 1
+            if self.config.early_stop_no_improve and ctx.no_improve_count >= self.config.early_stop_no_improve:
+                self.logger.info(f"连续未改进达到阈值 {self.config.early_stop_no_improve}，提前停止。")
+                return True
+            return False
+
+        # 5. 评估新代码
         try:
-            self.logger.info(f"开始优化实例: {instance_id}")
+            self.logger.info("开始评估优化后的代码性能")
+            performance_result = self._evaluate_performance(ctx.language, optimized_code, ctx.test_cases, ctx.instance)
 
-            # 使用配置中的语言
-            language = self._normalize_language(self.config.language_cfg.language)
-
-            # 设置轨迹语言与优化方向
-            trajectory.metadata.language = language
-            trajectory.metadata.optimization_target = self.config.optimization.target
-
-            # 将系统提示在对话历史最开头记录一次
-            system_prompt_header = self._build_system_prompt(
-                language=language,
-                optimization_target=self.config.optimization.target,
-                task_description=inst.description_md,
+            # 更新上下文状态
+            improved = self._update_run_context_after_eval(
+                ctx, optimized_code, performance_result, diff_text, iteration_num
             )
-            trajectory.add_history(role="system", content=system_prompt_header, message_type="system_prompt")
 
-            # 提取初始代码与测试用例
-            initial_code = self._extract_initial_code(
-                inst, language=language, optimization_target=self.config.optimization.target
-            )
-            test_cases = self._prepare_test_cases(inst)
-
-            if not initial_code:
-                raise ValueError("无法提取初始代码")
-
-            # 若接受了外部初始代码（文本或目录），则初始评估计为第1次迭代
-            iter_offset = 1 if self._initial_code_source in ("text", "dir") else 0
-
-            # 初始化当前代码与最佳性能
-            current_code = initial_code
-            best_performance = float("inf")
-            best_code = initial_code
-            latest_optimized_code = current_code
-
-            # 评估初始性能
-            step_id = trajectory.start_step(
-                "initial_evaluation", query="Evaluate the initial code performance.", code_snapshot=current_code
-            )
-            initial_performance = self._evaluate_performance(language, current_code, test_cases, inst)
-            initial_evaluation_summary = {
-                "performance_analysis": initial_performance.get("performance_analysis", {}),
-                "failed_test_details": initial_performance.get("failed_test_details", [])[:3],
-            }
-            initial_summary_text = self._build_summary_text(
-                iteration=1 if iter_offset else 0,
-                code_changed=False,
-                diff_text=None,
-                benchmark_results=initial_performance,
-                current_program=current_code,
-            )
-            trajectory.end_step(
+            # 记录步骤
+            self._record_iteration_step(
+                ctx,
                 step_id,
-                response=initial_summary_text,
-                thought="收集初始性能基线以指导后续优化",
-                code_changed=False,
-                performance_metrics=initial_evaluation_summary,
-                code_snapshot=current_code,
+                optimization_response,
+                diff_text,
+                optimized_code,
+                performance_result,
+                iteration_num,
+                improved,
             )
 
-            def _extract_pass_rate(results: dict[str, Any]) -> float:
-                pr_list = results.get("pass_rates") or []
-                try:
-                    if isinstance(pr_list, list) and pr_list:
-                        return float(min(float(p) for p in pr_list))
-                except Exception:
-                    pass
-                try:
-                    fr = results.get("first_run_details") or []
-                    total = len(fr)
-                    passed = sum(1 for tc in fr if tc.get("passed", False))
-                    return (passed / total) if total > 0 else 0.0
-                except Exception:
-                    return 0.0
+            if improved:
+                ctx.no_improve_count = 0
+            else:
+                ctx.no_improve_count += 1
 
-            best_pass_rate = _extract_pass_rate(initial_performance)
-            target = self.config.optimization.target
-            init_metric = initial_evaluation_summary["performance_analysis"].get(target, float("inf"))
-            if init_metric <= best_performance:
-                best_performance = init_metric
-                best_code = current_code
-
-            # 记录当前代码对应的最新评估结果（用于提示构造）
-            current_benchmark_results = initial_performance
-            # 记录当前最佳评估结果（与 best_code 对应），用于最终输出完整三项指标
-            best_benchmark_results = initial_performance
-
-            # 迭代优化
-            no_improve_count = 0  # 连续未改进计数（跨迭代累积）
-
-            # 主迭代循环
-            # 若存在外部初始代码（文本或目录），初始评估记为第1次迭代，优化循环次数相应减一
-            remaining_iterations = max(0, self.config.max_iterations - iter_offset)
-            for iteration in range(remaining_iterations):
-                self.logger.info(f"开始第 {iteration + 1 + iter_offset} 次迭代")
-
-                # 生成优化建议
-                opt_prompt = self._build_optimization_prompt(
-                    current_program=current_code,
-                    language=language,
-                    benchmark_results=current_benchmark_results,
-                )
-                step_id = trajectory.start_step(
-                    "generate_optimization",
-                    query=opt_prompt,
-                    code_snapshot=current_code,
-                )
-
-                # multi-turn chat: 构造消息序列（保留最近会话上下文）
-                system_prompt = self._build_system_prompt(
-                    language=language,
-                    optimization_target=self.config.optimization.target,
-                    task_description=inst.description_md,
-                )
-                messages = self._build_messages(system_prompt, trajectory.history, opt_prompt)
-
-                if self.llm_client:
-                    try:
-                        optimization_response = self.llm_client.call_llm(
-                            messages,
-                            temperature=self.config.model.temperature,
-                            max_tokens=self.config.model.max_output_tokens,
-                            usage_context="perfagent.optimize",
-                        )
-                    except TypeError:
-                        optimization_response = self.llm_client.call_llm(
-                            messages,
-                            temperature=self.config.model.temperature,
-                            max_tokens=self.config.model.max_output_tokens,
-                        )
-                else:
-                    # 保守回退：LLM 未配置时返回空建议，避免引入无效 diff
-                    optimization_response = "LLM 未配置或不可用，跳过本次优化建议。请检查 API 配置。"
-
-                # 提取代码变更
-                diff_text = None
-                optimized_code = None
-
-                if self.config.optimization.code_generation_mode == "direct":
-                    optimized_code = self._extract_full_code_from_response(optimization_response)
-                    if not optimized_code:
-                        summary_text = self._build_summary_text(
-                            iteration=iteration + 1 + iter_offset,
-                            code_changed=False,
-                            diff_text=None,
-                            benchmark_results=None,
-                            current_program=current_code,
-                            error_message="无法从响应中提取有效的完整代码",
-                        )
-                        trajectory.end_step(
-                            step_id,
-                            response=optimization_response,
-                            thought="未能提取有效的完整代码区块",
-                            code_changed=False,
-                            diff=None,
-                            error="无法从响应中提取有效的完整代码",
-                            code_snapshot=current_code,
-                            summary=summary_text,
-                        )
-                        continue
-                else:
-                    # 提取 diff
-                    diff_text = self._extract_diff_from_response(optimization_response)
-
-                    if not diff_text:
-                        summary_text = self._build_summary_text(
-                            iteration=iteration + 1 + iter_offset,
-                            code_changed=False,
-                            diff_text=None,
-                            benchmark_results=None,
-                            current_program=current_code,
-                            error_message="无法从响应中提取有效的 diff",
-                        )
-                        trajectory.end_step(
-                            step_id,
-                            response=optimization_response,
-                            thought="未能提取有效的 SEARCH/REPLACE 区块",
-                            code_changed=False,
-                            diff=None,
-                            error="无法从响应中提取有效的 diff",
-                            code_snapshot=current_code,
-                            summary=summary_text,
-                        )
-                        continue
-
-                # 应用变更
-                try:
-                    if self.config.optimization.code_generation_mode == "diff":
-                        optimized_code = self.diff_applier.apply_diff(current_code, diff_text)
-
-                    # 如果代码未发生变化，仅结束该步骤并跳过迭代
-                    if optimized_code == current_code:
-                        summary_text = self._build_summary_text(
-                            iteration=iteration + 1 + iter_offset,
-                            code_changed=False,
-                            diff_text=diff_text,
-                            benchmark_results=current_benchmark_results,
-                            current_program=current_code,
-                        )
-                        trajectory.end_step(
-                            step_id,
-                            response=optimization_response,
-                            thought="diff 应用后代码未变化，跳过",
-                            code_changed=False,
-                            diff=diff_text,
-                            code_snapshot=current_code,
-                            summary=summary_text,
-                        )
-                        self.logger.warning("代码未发生变化，跳过此次迭代")
-                        # 记录未改进一次并检查早停
-                        no_improve_count += 1
-                        if self.config.early_stop_no_improve and no_improve_count >= self.config.early_stop_no_improve:
-                            self.logger.info(f"连续未改进达到阈值 {self.config.early_stop_no_improve}，提前停止。")
-                            break
-                        continue
-
-                    # 评估优化后的性能，并将结果作为 performance_metrics 附加到 generate_optimization
-                    try:
-                        latest_optimized_code = optimized_code
-                        self.logger.info("开始评估优化后的代码性能")
-                        performance_result = self._evaluate_performance(language, optimized_code, test_cases, inst)
-
-                        target = self.config.optimization.target
-                        current_performance = performance_result.get("performance_analysis", {}).get(
-                            target, float("inf")
-                        )
-                        current_pass_rate = _extract_pass_rate(performance_result)
-
-                        # 仅保留核心评估结果
-                        evaluation_summary = {
-                            "performance_analysis": performance_result.get("performance_analysis", {}),
-                            "failed_test_details": performance_result.get("failed_test_details", [])[:3],
-                            "pass_rates": performance_result.get("pass_rates", []),
-                            "pass_rate_consistent": performance_result.get("pass_rate_consistent", False),
-                        }
-
-                        # 记录优化历史
-                        self.optimization_history.append(
-                            {
-                                "iteration": iteration + 1 + iter_offset,
-                                "diff": diff_text,
-                                "performance_before": best_performance,
-                                "performance_after": current_performance,
-                                "improvement": best_performance - current_performance,
-                                # 强制转换为 Python bool，避免 numpy.bool_ 导致 JSON 序列化错误
-                                "success": bool(
-                                    (current_pass_rate > best_pass_rate)
-                                    or (
-                                        current_pass_rate == best_pass_rate
-                                        and current_pass_rate == 1.0
-                                        and current_performance < best_performance
-                                    )
-                                ),
-                            }
-                        )
-
-                        improved = False
-                        if current_pass_rate > best_pass_rate:
-                            improved = True
-                        elif (
-                            current_pass_rate == best_pass_rate
-                            and current_pass_rate == 1.0
-                            and current_performance < best_performance
-                        ):
-                            improved = True
-
-                        if improved:
-                            best_pass_rate = current_pass_rate
-                            best_performance = current_performance
-                            best_code = optimized_code
-                            best_benchmark_results = performance_result
-                            self.logger.info(
-                                f"采用更优代码: pass_rate {best_pass_rate:.2f}, {target} {best_performance:.4f}"
-                            )
-                            no_improve_count = 0
-                        else:
-                            self.logger.info(
-                                f"未改进: pass_rate {current_pass_rate:.2f} vs {best_pass_rate:.2f}; {target} {current_performance:.4f} vs {best_performance:.4f}"
-                            )
-                            no_improve_count += 1
-
-                        # 根据配置决定是否采用优化后的代码作为下一轮基础
-                        if self.config.optimization.adopt_only_if_improved:
-                            if improved:
-                                current_code = optimized_code
-                            else:
-                                current_code = best_code
-                        else:
-                            current_code = optimized_code
-                        # 更新最新评估结果，供下一轮提示生成使用
-                        current_benchmark_results = performance_result
-
-                        adopted = True
-                        if self.config.optimization.adopt_only_if_improved:
-                            adopted = improved
-                        summary_text = self._build_summary_text(
-                            iteration=iteration + 1 + iter_offset,
-                            code_changed=adopted,
-                            diff_text=diff_text,
-                            benchmark_results=performance_result,
-                            current_program=current_code,
-                        )
-                        trajectory.end_step(
-                            step_id,
-                            response=optimization_response,
-                            thought=("应用 diff 并完成性能评估" if adopted else "评估未改进，未采用优化"),
-                            code_changed=adopted,
-                            diff=diff_text,
-                            performance_metrics=evaluation_summary,
-                            code_snapshot=current_code,
-                            summary=summary_text,
-                        )
-
-                        # 早停检查（评估后）
-                        if self.config.early_stop_no_improve and no_improve_count >= self.config.early_stop_no_improve:
-                            self.logger.info(f"连续未改进达到阈值 {self.config.early_stop_no_improve}，提前停止。")
-                            break
-
-                    except Exception as e:
-                        summary_text = self._build_summary_text(
-                            iteration=iteration + 1,
-                            code_changed=True,
-                            diff_text=diff_text,
-                            benchmark_results=None,
-                            current_program=current_code,
-                            error_message=f"性能评估失败: {e}",
-                        )
-                        trajectory.end_step(
-                            step_id,
-                            response=optimization_response,
-                            thought="性能评估阶段发生异常",
-                            code_changed=True,
-                            diff=diff_text,
-                            performance_metrics=None,
-                            error=f"性能评估失败: {e}",
-                            code_snapshot=current_code,
-                            summary=summary_text,
-                        )
-                        continue
-
-                except Exception as e:
-                    summary_text = self._build_summary_text(
-                        iteration=iteration + 1 + iter_offset,
-                        code_changed=False,
-                        diff_text=diff_text,
-                        benchmark_results=None,
-                        current_program=current_code,
-                        error_message=f"应用 diff 失败: {e}",
-                    )
-                    trajectory.end_step(
-                        step_id,
-                        response=optimization_response,
-                        thought="应用 diff 阶段发生异常",
-                        code_changed=None,
-                        diff=diff_text,
-                        performance_metrics=None,
-                        error=f"应用 diff 失败: {e}",
-                        code_snapshot=current_code,
-                        summary=summary_text,
-                    )
-                    continue
-
-            # 完成优化
-            # 计算 success 时确保参与比较的值为原生 Python 类型
-            target = self.config.optimization.target
-            initial_trimmed = initial_performance.get("performance_analysis", {}).get(target, float("inf"))
-            try:
-                item_fn = getattr(initial_trimmed, "item", None)
-                if callable(item_fn):
-                    initial_trimmed = item_fn()
-            except Exception:
-                pass
-            if isinstance(initial_trimmed, str):
-                s = initial_trimmed.strip().lower()
-                if s in ("inf", "+inf", "infinity", "+infinity"):
-                    initial_trimmed = float("inf")
-                elif s in ("-inf", "-infinity"):
-                    initial_trimmed = float("-inf")
-                elif s == "nan":
-                    initial_trimmed = float("nan")
-                else:
-                    try:
-                        initial_trimmed = float(initial_trimmed)
-                    except Exception:
-                        initial_trimmed = float("inf")
-
-            try:
-                bp_item = getattr(best_performance, "item", None)
-                if callable(bp_item):
-                    best_performance = bp_item()
-            except Exception:
-                pass
-
-            executed_iterations = len(self.optimization_history)
-            optimized_code_final = latest_optimized_code if executed_iterations == 1 else best_code
-
-            final_result = {
-                "instance_id": instance_id,
-                "initial_code": initial_code,
-                "optimized_code": optimized_code_final,
-                "initial_performance": initial_trimmed,
-                "final_performance": best_performance,
-                # 总迭代数 = 初始评估(若存在) + 实际优化循环次数
-                "total_iterations": (1 if self._initial_code_source in ("text", "dir") else 0) + remaining_iterations,
-                "optimization_history": self.optimization_history,
-                # 显式转换为 Python bool，避免 numpy.bool_
-                "success": bool(best_performance < initial_trimmed),
-            }
-
-            unit = "s" if target == "runtime" else ("MB" if target == "memory" else "MB*s")
-            final_result["language"] = language
-            final_result["optimization_target"] = target
-            final_result["performance_unit"] = unit
-
-            try:
-                result_for_output = best_benchmark_results if executed_iterations > 1 else current_benchmark_results
-                metrics_dict, artifacts_dict = self._build_metrics_and_artifacts(result_for_output)
-                metrics_md = self._format_metrics_md(metrics_dict)
-                artifacts_md = self._format_artifacts_md(artifacts_dict)
-
-                final_artifacts = "Current Metrics:\n" + metrics_md + "\n\nCurrent Artifacts:\n" + artifacts_md
-
-                final_result["final_artifacts"] = final_artifacts
-            except Exception:
-                final_result["final_artifacts"] = None
-
-            # 汇总最终三项指标（runtime/memory/integral），便于后续使用
-            try:
-                perf_metrics = result_for_output.get("performance_analysis", {})
-                final_result["final_metrics"] = {
-                    "runtime": perf_metrics.get("runtime", "Infinity"),
-                    "memory": perf_metrics.get("memory", "Infinity"),
-                    "integral": perf_metrics.get("integral", "Infinity"),
-                }
-            except Exception:
-                final_result["final_metrics"] = {
-                    "runtime": "Infinity",
-                    "memory": "Infinity",
-                    "integral": "Infinity",
-                }
-
-            # 记录最终轨迹
-            selected_value = final_result.get("final_metrics", {}).get(target)
-            try:
-                if isinstance(selected_value, str):
-                    s = selected_value.strip().lower()
-                    if s in ("inf", "+inf", "infinity", "+infinity"):
-                        selected_value = float("inf")
-                    elif s in ("-inf", "-infinity"):
-                        selected_value = float("-inf")
-                    else:
-                        selected_value = float(selected_value)
-            except Exception:
-                pass
-
-            trajectory_file = trajectory.finalize(
-                success=final_result["success"],
-                final_performance={
-                    "target": self.config.optimization.target,
-                    "unit": unit,
-                    "value": selected_value if selected_value is not None else best_performance,
-                    "runtime": final_result.get("final_metrics", {}).get("runtime"),
-                    "memory": final_result.get("final_metrics", {}).get("memory"),
-                    "integral": final_result.get("final_metrics", {}).get("integral"),
-                },
-                final_submission_code=optimized_code_final,
-            )
-
-            final_result["trajectory_file"] = trajectory_file
-
-            return final_result
+            if self.config.early_stop_no_improve and ctx.no_improve_count >= self.config.early_stop_no_improve:
+                self.logger.info(f"连续未改进达到阈值 {self.config.early_stop_no_improve}，提前停止。")
+                return True
 
         except Exception as e:
-            self.logger.error(f"优化过程失败: {e}")
+            self._handle_evaluation_error(ctx, step_id, optimization_response, diff_text, iteration_num, str(e))
+
+        return False
+
+    def _call_llm_for_optimization(self, ctx: RunContext, opt_prompt: str) -> str:
+        """调用 LLM 获取优化建议"""
+        system_prompt = self._build_system_prompt(
+            language=ctx.language,
+            optimization_target=self.config.optimization.target,
+            task_description=ctx.instance.description_md,
+            task_type=getattr(ctx.instance, "type", None),
+            starter_code=getattr(ctx.instance, "starter_code", {}).get(ctx.language, None),
+        )
+        messages = self._build_messages(system_prompt, ctx.trajectory.history, opt_prompt)
+
+        if self.llm_client:
             try:
-                trajectory.finalize(success=False, error_message=str(e), final_submission_code=best_code)
-            except Exception:
-                trajectory.finalize(success=False, error_message=str(e), final_submission_code=None)
-            raise
+                return self.llm_client.call_llm(
+                    messages,
+                    temperature=self.config.model.temperature,
+                    max_tokens=self.config.model.max_output_tokens,
+                    usage_context="perfagent.optimize",
+                )
+            except TypeError:
+                return self.llm_client.call_llm(
+                    messages,
+                    temperature=self.config.model.temperature,
+                    max_tokens=self.config.model.max_output_tokens,
+                )
+        return "LLM 未配置或不可用，跳过本次优化建议。请检查 API 配置。"
+
+    def _handle_failed_code_extraction(
+        self, ctx: RunContext, step_id: str, response: str, iteration: int, error_msg: str
+    ):
+        summary = self._build_summary_text(
+            iteration=iteration,
+            code_changed=False,
+            diff_text=None,
+            benchmark_results=None,
+            current_program=ctx.current_code,
+            error_message=error_msg,
+        )
+        ctx.trajectory.end_step(
+            step_id,
+            response=response,
+            thought="未能提取有效的代码/diff",
+            code_changed=False,
+            diff=None,
+            error=error_msg,
+            code_snapshot=ctx.current_code,
+            summary=summary,
+        )
+
+    def _handle_failed_diff_application(
+        self, ctx: RunContext, step_id: str, response: str, diff_text: str, iteration: int, error_msg: str
+    ):
+        summary = self._build_summary_text(
+            iteration=iteration,
+            code_changed=False,
+            diff_text=diff_text,
+            benchmark_results=None,
+            current_program=ctx.current_code,
+            error_message=f"应用 diff 失败: {error_msg}",
+        )
+        ctx.trajectory.end_step(
+            step_id,
+            response=response,
+            thought="应用 diff 阶段发生异常",
+            code_changed=None,
+            diff=diff_text,
+            performance_metrics=None,
+            error=f"应用 diff 失败: {error_msg}",
+            code_snapshot=ctx.current_code,
+            summary=summary,
+        )
+
+    def _handle_no_code_change(self, ctx: RunContext, step_id: str, response: str, diff_text: str, iteration: int):
+        summary = self._build_summary_text(
+            iteration=iteration,
+            code_changed=False,
+            diff_text=diff_text,
+            benchmark_results=ctx.current_benchmark_results,
+            current_program=ctx.current_code,
+        )
+        ctx.trajectory.end_step(
+            step_id,
+            response=response,
+            thought="diff 应用后代码未变化，跳过",
+            code_changed=False,
+            diff=diff_text,
+            code_snapshot=ctx.current_code,
+            summary=summary,
+        )
+        self.logger.warning("代码未发生变化，跳过此次迭代")
+
+    def _update_run_context_after_eval(
+        self, ctx: RunContext, optimized_code: str, performance_result: dict, diff_text: str | None, iteration: int
+    ) -> bool:
+        """更新上下文并判断是否改进"""
+        current_performance = performance_result.get("performance_analysis", {}).get(
+            ctx.optimization_target, float("inf")
+        )
+        current_pass_rate = self._extract_pass_rate(performance_result)
+
+        improved = False
+        if current_pass_rate > ctx.best_pass_rate:
+            improved = True
+        elif (
+            current_pass_rate == ctx.best_pass_rate
+            and current_pass_rate == 1.0
+            and current_performance < ctx.best_performance
+        ):
+            improved = True
+
+        # 如果最大迭代次数为 1，强制视为改进（即总是保存生成代码）
+        # 除非代码完全崩溃（这里可以根据需求调整，当前逻辑是只要运行了就保存）
+        if self.config.max_iterations == 1 and not improved:
+            improved = True
+            self.logger.info("单次迭代模式：强制采纳生成代码作为最佳结果")
+
+        # 记录历史
+        ctx.optimization_history.append(
+            {
+                "iteration": iteration,
+                "diff": diff_text,
+                "performance_before": ctx.best_performance,
+                "performance_after": current_performance,
+                "improvement": ctx.best_performance - current_performance,
+                "success": improved,
+            }
+        )
+
+        if improved:
+            ctx.best_pass_rate = current_pass_rate
+            ctx.best_performance = current_performance
+            ctx.best_code = optimized_code
+            ctx.best_benchmark_results = performance_result
+            self.logger.info(
+                f"采用更优代码: pass_rate {ctx.best_pass_rate:.2f}, {ctx.optimization_target} {ctx.best_performance:.4f}"
+            )
+        else:
+            self.logger.info(f"未改进: pass_rate {current_pass_rate:.2f} vs {ctx.best_pass_rate:.2f}")
+
+        # 决定是否采用代码
+        if self.config.optimization.adopt_only_if_improved:
+            if improved:
+                ctx.current_code = optimized_code
+            else:
+                ctx.current_code = ctx.best_code
+        else:
+            ctx.current_code = optimized_code
+
+        ctx.current_benchmark_results = performance_result
+        return improved
+
+    def _record_iteration_step(
+        self,
+        ctx: RunContext,
+        step_id: str,
+        response: str,
+        diff_text: str | None,
+        optimized_code: str,
+        performance_result: dict,
+        iteration: int,
+        improved: bool,
+    ):
+        adopted = improved if self.config.optimization.adopt_only_if_improved else True
+
+        evaluation_summary = {
+            "performance_analysis": performance_result.get("performance_analysis", {}),
+            "failed_test_details": performance_result.get("failed_test_details", [])[:3],
+            "pass_rates": performance_result.get("pass_rates", []),
+            "pass_rate_consistent": performance_result.get("pass_rate_consistent", False),
+        }
+
+        summary_text = self._build_summary_text(
+            iteration=iteration,
+            code_changed=adopted,
+            diff_text=diff_text,
+            benchmark_results=performance_result,
+            current_program=ctx.current_code,
+        )
+
+        ctx.trajectory.end_step(
+            step_id,
+            response=response,
+            thought=("应用 diff 并完成性能评估" if adopted else "评估未改进，未采用优化"),
+            code_changed=adopted,
+            diff=diff_text,
+            performance_metrics=evaluation_summary,
+            code_snapshot=ctx.current_code,
+            summary=summary_text,
+        )
+
+    def _handle_evaluation_error(
+        self, ctx: RunContext, step_id: str, response: str, diff_text: str | None, iteration: int, error_msg: str
+    ):
+        summary = self._build_summary_text(
+            iteration=iteration,
+            code_changed=True,
+            diff_text=diff_text,
+            benchmark_results=None,
+            current_program=ctx.current_code,
+            error_message=f"性能评估失败: {error_msg}",
+        )
+        ctx.trajectory.end_step(
+            step_id,
+            response=response,
+            thought="性能评估阶段发生异常",
+            code_changed=True,
+            diff=diff_text,
+            performance_metrics=None,
+            error=f"性能评估失败: {error_msg}",
+            code_snapshot=ctx.current_code,
+            summary=summary,
+        )
+
+    def _finalize_run(self, ctx: RunContext) -> dict[str, Any]:
+        """完成运行并生成最终结果"""
+        initial_trimmed = ctx.initial_performance_value
+        best_perf = self._clean_performance_value(ctx.best_performance)
+
+        executed_iterations = len(ctx.optimization_history)
+        # 初始代码 + 迭代次数
+        total_iterations = (1 if self._initial_code_source in ("text", "dir") else 0) + executed_iterations
+
+        optimized_code_final = ctx.best_code
+
+        final_result = {
+            "instance_id": ctx.instance.id,
+            "initial_code": ctx.initial_code,
+            "optimized_code": optimized_code_final,
+            "initial_performance": initial_trimmed,
+            "final_performance": best_perf,
+            "total_iterations": total_iterations,
+            "optimization_history": ctx.optimization_history,
+            "success": bool(best_perf < initial_trimmed),
+        }
+
+        unit = (
+            "s" if ctx.optimization_target == "runtime" else ("MB" if ctx.optimization_target == "memory" else "MB*s")
+        )
+        final_result["language"] = ctx.language
+        final_result["optimization_target"] = ctx.optimization_target
+        final_result["performance_unit"] = unit
+
+        try:
+            result_for_output = ctx.best_benchmark_results
+            metrics_dict, artifacts_dict = self._build_metrics_and_artifacts(result_for_output)
+            metrics_md = self._format_metrics_md(metrics_dict)
+            artifacts_md = self._format_artifacts_md(artifacts_dict)
+
+            final_artifacts = "Current Metrics:\n" + metrics_md + "\n\nCurrent Artifacts:\n" + artifacts_md
+            final_result["final_artifacts"] = final_artifacts
+        except Exception:
+            final_result["final_artifacts"] = None
+
+        # 汇总最终三项指标
+        try:
+            perf_metrics = result_for_output.get("performance_analysis", {})
+            final_result["final_metrics"] = {
+                "runtime": perf_metrics.get("runtime", "Infinity"),
+                "memory": perf_metrics.get("memory", "Infinity"),
+                "integral": perf_metrics.get("integral", "Infinity"),
+            }
+        except Exception:
+            final_result["final_metrics"] = {
+                "runtime": "Infinity",
+                "memory": "Infinity",
+                "integral": "Infinity",
+            }
+
+        # 记录最终轨迹
+        selected_value = final_result.get("final_metrics", {}).get(ctx.optimization_target)
+        selected_value = self._clean_performance_value(selected_value)
+
+        trajectory_file = ctx.trajectory.finalize(
+            success=final_result["success"],
+            final_performance={
+                "target": ctx.optimization_target,
+                "unit": unit,
+                "value": selected_value if selected_value != float("inf") else best_perf,
+                "runtime": final_result.get("final_metrics", {}).get("runtime"),
+                "memory": final_result.get("final_metrics", {}).get("memory"),
+                "integral": final_result.get("final_metrics", {}).get("integral"),
+            },
+            final_submission_code=optimized_code_final,
+        )
+
+        final_result["trajectory_file"] = trajectory_file
+        return final_result
 
     def _build_optimization_prompt(
         self,
@@ -995,6 +936,8 @@ class PerfAgent:
         """构建优化提示词，填充当前程序、评估指标与构件(section)。"""
         if self.config.optimization.code_generation_mode == "direct":
             return self.config.prompts.optimization_template
+
+        # diff-based prompt construction
         # 构造 metrics 与 artifacts
         metrics_dict, artifacts_dict = self._build_metrics_and_artifacts(benchmark_results)
         # 以 Markdown 格式化，便于模型阅读
@@ -1019,32 +962,55 @@ class PerfAgent:
                 "## Current Artifacts\n" + current_artifacts_str
             )
 
-    def _build_system_prompt(self, language: str, optimization_target: str, task_description: str) -> str:
-        """格式化系统提示词，填充语言/优化目标/任务描述/附加要求。"""
+    def _build_system_prompt(
+        self,
+        language: str,
+        optimization_target: str,
+        task_description: str,
+        task_type: str | None = None,
+        starter_code: str | None = None,
+    ) -> str:
         tmpl = self.config.prompts.system_template
         additional = self.config.prompts.additional_requirements or ""
         local_memory = getattr(self.config.prompts, "local_memory", None) or ""
         global_memory = getattr(self.config.prompts, "global_memory", None) or ""
+        allowed_imports_scope = EFFIBENCH_REGISTRY.get(language, {}).get("imports", "")
+        is_functional = (task_type or "").lower() == "functional"
         if tmpl:
             try:
-                return tmpl.format(
+                base = tmpl.format(
                     language=language,
                     optimization_target=optimization_target,
                     task_description=task_description,
                     additional_requirements=additional,
                     local_memory=local_memory,
                     global_memory=global_memory,
+                    allowed_imports_scope=allowed_imports_scope,
                 )
             except Exception:
-                return tmpl
-        # 默认提示
-        return (
-            f"你是一个专业的代码性能优化专家。目标是提升 {optimization_target}。\n"
-            f"当前语言：{language}。任务描述：{task_description}\n\n"
-            f"附加要求：{additional}\n\n"
-            f"本地记忆：{local_memory}\n\n"
-            f"全局记忆：{global_memory}"
-        )
+                base = tmpl
+        else:
+            base = (
+                f"你是一个专业的代码性能优化专家。目标是提升 {optimization_target}。\n"
+                f"当前语言：{language}。任务描述：{task_description}\n\n"
+                f"附加要求：{additional}\n\n"
+                f"本地记忆：{local_memory}\n\n"
+                f"全局记忆：{global_memory}\n\n"
+                f"允许使用的标准导入范围如下：\n"
+                f"{allowed_imports_scope}"
+            )
+        if is_functional and starter_code:
+            starter_section = (
+                "\n\n## Starter Code\n"
+                "Use the following starter code as the exact framework for your solution.\n\n"
+                f"```{language}\n"
+                f"{starter_code}\n"
+                "```\n\n"
+                "- Implement the function with the exact signature (name, parameters, etc.) "
+                "specified in the starter code.\n"
+            )
+            return base + starter_section
+        return base
 
     def _build_metrics_and_artifacts(self, benchmark_results: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
         """根据基准评估结果构造 current_metrics 与 current_artifacts_section。"""
