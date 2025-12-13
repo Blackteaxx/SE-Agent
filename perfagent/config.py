@@ -44,6 +44,8 @@ class OptimizationConfig:
     enable_runtime_checks: bool = True
     adopt_only_if_improved: bool = False
     code_generation_mode: Literal["diff", "direct"] = "diff"
+    # 是否在 metrics 中包含非 target 的其他指标（如 runtime, memory, integral）
+    include_other_metrics_in_summary: bool = True
 
 
 @dataclass
@@ -152,6 +154,8 @@ class PerfAgentConfig:
             self.language_cfg.language = args.language
         if getattr(args, "opt_target", None):
             self.optimization.target = args.opt_target
+        if getattr(args, "include_other_metrics", None) is not None:
+            self.optimization.include_other_metrics_in_summary = args.include_other_metrics
 
         # LLM 客户端配置
         if getattr(args, "llm_use", False):

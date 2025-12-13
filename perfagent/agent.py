@@ -1012,7 +1012,9 @@ class PerfAgent:
             return base + starter_section
         return base
 
-    def _build_metrics_and_artifacts(self, benchmark_results: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    def _build_metrics_and_artifacts(
+        self, benchmark_results: dict[str, Any], include_other_metrics: bool | None = None
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         """根据基准评估结果构造 current_metrics 与 current_artifacts_section。"""
         performance_metrics = benchmark_results.get("performance_analysis", {})
         failed_test_details = benchmark_results.get("failed_test_details", []) or []
@@ -1020,6 +1022,15 @@ class PerfAgent:
         # 失败情况：汇总失败信息并返回错误指标
         target = self.config.optimization.target
 
+        # Determine which metrics to include
+        if include_other_metrics is None:
+            include_other_metrics = self.config.optimization.include_other_metrics_in_summary
+
+        keys_to_include = {"runtime", "memory", "integral"}
+        if not include_other_metrics:
+            keys_to_include = {target}
+
+        # 失败情况：汇总失败信息并返回错误指标
         passed = performance_metrics.get("passed", False)
         if not passed:
             num_failed = len(failed_test_details)
@@ -1052,14 +1063,14 @@ class PerfAgent:
 
             metrics = {
                 "pass_rate": pass_rate,
-                "runtime": "Infinity",
-                "memory": "Infinity",
-                "integral": "Infinity",
                 "target": target,
                 "error": (
                     f"Solution failed {len(failed_test_details)} test case(s) with statuses: {all_statuses}. See artifacts for details."
                 ),
             }
+            for k in keys_to_include:
+                metrics[k] = "Infinity"
+
             return metrics, error_artifacts
 
         # 成功情况：计算时间分数与综合分数
@@ -1067,11 +1078,11 @@ class PerfAgent:
 
         metrics = {
             "pass_rate": pass_rate,
-            "runtime": performance_metrics.get("runtime", "Infinity"),
-            "memory": performance_metrics.get("memory", "Infinity"),
-            "integral": performance_metrics.get("integral", "Infinity"),
             "target": target,
         }
+        for k in keys_to_include:
+            metrics[k] = performance_metrics.get(k, "Infinity")
+
         artifacts = {"details": "All test cases passed."}
         return metrics, artifacts
 
