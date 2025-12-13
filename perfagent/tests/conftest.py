@@ -5,7 +5,40 @@ pytest 共享配置和 fixtures
 import shutil
 import sys
 import tempfile
+import types
 from pathlib import Path
+from unittest.mock import MagicMock
+
+# Mock scipy to avoid import error
+scipy = types.ModuleType("scipy")
+scipy.stats = MagicMock()
+sys.modules["scipy"] = scipy
+sys.modules["scipy.stats"] = scipy.stats
+
+# Mock openai to avoid pydantic dependency hell
+openai = types.ModuleType("openai")
+openai.OpenAI = MagicMock
+openai.APIConnectionError = Exception
+openai.APIError = Exception
+openai.APITimeoutError = Exception
+openai.BadRequestError = Exception
+openai.RateLimitError = Exception
+sys.modules["openai"] = openai
+
+# Mock pydantic for backend_utils
+pydantic = types.ModuleType("pydantic")
+pydantic.BaseModel = MagicMock
+pydantic.Field = MagicMock
+sys.modules["pydantic"] = pydantic
+
+# Mock other missing dependencies
+fastapi = types.ModuleType("fastapi")
+fastapi.FastAPI = MagicMock()
+fastapi.HTTPException = MagicMock()
+sys.modules["fastapi"] = fastapi
+
+numpy = types.ModuleType("numpy")
+sys.modules["numpy"] = numpy
 
 import pytest
 
@@ -13,8 +46,6 @@ import pytest
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
-
-from perfagent.config import PerfAgentConfig
 
 
 @pytest.fixture(scope="session")
@@ -126,6 +157,8 @@ int main() {
 @pytest.fixture
 def default_config(temp_dir):
     """默认测试配置"""
+    from perfagent.config import PerfAgentConfig
+
     return PerfAgentConfig(trajectory_dir=temp_dir / "trajectories", max_iterations=2)
 
 
