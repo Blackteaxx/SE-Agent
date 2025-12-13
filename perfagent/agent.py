@@ -248,6 +248,17 @@ class PerfAgent:
         # 3) 默认占位符（保持现有测试兼容）
         return self._get_default_placeholder(language)
 
+    def _resolve_starter_code(self, instance: EffiBenchXInstance, language: str) -> str | None:
+        sc = getattr(instance, "starter_code", None)
+        if isinstance(sc, dict):
+            try:
+                return sc.get(language)
+            except Exception:
+                return None
+        if isinstance(sc, str):
+            return sc
+        return None
+
     def _prepare_test_cases(self, instance: EffiBenchXInstance) -> list[dict[str, Any]]:
         """准备测试用例（实例仅为 dataclass）"""
         return instance.generated_tests or []
@@ -460,7 +471,7 @@ class PerfAgent:
             optimization_target=self.config.optimization.target,
             task_description=inst.description_md,
             task_type=getattr(inst, "type", None),
-            starter_code=getattr(inst, "starter_code", {}).get(language, None),
+            starter_code=self._resolve_starter_code(inst, language),
         )
         trajectory.add_history(role="system", content=system_prompt, message_type="system_prompt")
 
@@ -646,7 +657,7 @@ class PerfAgent:
             optimization_target=self.config.optimization.target,
             task_description=ctx.instance.description_md,
             task_type=getattr(ctx.instance, "type", None),
-            starter_code=getattr(ctx.instance, "starter_code", {}).get(ctx.language, None),
+            starter_code=self._resolve_starter_code(ctx.instance, ctx.language),
         )
         messages = self._build_messages(system_prompt, ctx.trajectory.history, opt_prompt)
 
@@ -740,13 +751,7 @@ class PerfAgent:
         current_pass_rate = self._extract_pass_rate(performance_result)
 
         improved = False
-        if current_pass_rate > ctx.best_pass_rate:
-            improved = True
-        elif (
-            current_pass_rate == ctx.best_pass_rate
-            and current_pass_rate == 1.0
-            and current_performance < ctx.best_performance
-        ):
+        if current_pass_rate == 1.0 and current_performance < ctx.best_performance:
             improved = True
 
         # 如果最大迭代次数为 1，强制视为改进（即总是保存生成代码）
