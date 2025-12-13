@@ -45,10 +45,13 @@ def inspect_chromadb(persist_directory):
                 ids = peek_data.get("ids", [])
                 documents = peek_data.get("documents", [])
                 metadatas = peek_data.get("metadatas", [])
+                embeddings = peek_data.get("embeddings", [])
 
                 for i in range(len(ids)):
                     print(f"\n  Item {i + 1}:")
                     print(f"    ID: {ids[i]}")
+                    if embeddings.any() and i < len(embeddings):
+                        print(f"    Embeddings: {embeddings[i]}")
                     if metadatas and i < len(metadatas):
                         print(f"    Metadata: {metadatas[i]}")
                     if documents and i < len(documents):
