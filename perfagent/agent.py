@@ -35,6 +35,7 @@ class EffiBenchXInstance:
     language: str | None = None
     generated_tests: list[dict[str, Any]] = field(default_factory=list)
     evaluator: str | None = None
+    test_runners: dict[str, str] = field(default_factory=dict)
     # 任务名（来源于实例文件名，不含扩展名）
     task_name: str | None = None
 
@@ -52,6 +53,18 @@ class EffiBenchXInstance:
         else:
             gt_parsed = []
 
+        # Robustly parse test_runners when it can be a dict or a JSON string
+        tr_raw = data.get("test_runners", {})
+        if isinstance(tr_raw, str):
+            try:
+                tr_parsed = json.loads(tr_raw)
+            except Exception:
+                tr_parsed = {}
+        elif isinstance(tr_raw, dict):
+            tr_parsed = tr_raw
+        else:
+            tr_parsed = {}
+
         return EffiBenchXInstance(
             id=str(data.get("id", "unknown")),
             title=data.get("title", ""),
@@ -66,6 +79,7 @@ class EffiBenchXInstance:
             language=data.get("language"),
             generated_tests=gt_parsed,
             evaluator=data.get("evaluator"),
+            test_runners=tr_parsed,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -83,6 +97,7 @@ class EffiBenchXInstance:
             "language": self.language,
             "generated_tests": self.generated_tests,
             "evaluator": self.evaluator,
+            "test_runners": self.test_runners,
             "task_name": self.task_name,
         }
 
@@ -259,6 +274,27 @@ class PerfAgent:
             return sc
         return None
 
+    def _resolve_test_runner(self, instance: EffiBenchXInstance, language: str) -> str | None:
+        trs = getattr(instance, "test_runners", None)
+        if isinstance(trs, dict):
+            try:
+                lang_norm = self._normalize_language(language)
+                val = trs.get(lang_norm)
+                if isinstance(val, str) and val.strip():
+                    return val
+            except Exception:
+                return None
+        if isinstance(trs, str):
+            try:
+                parsed = json.loads(trs)
+                if isinstance(parsed, dict):
+                    val = parsed.get(self._normalize_language(language))
+                    if isinstance(val, str) and val.strip():
+                        return val
+            except Exception:
+                pass
+        return None
+
     def _prepare_test_cases(self, instance: EffiBenchXInstance) -> list[dict[str, Any]]:
         """准备测试用例（实例仅为 dataclass）"""
         return instance.generated_tests or []
@@ -323,6 +359,7 @@ class PerfAgent:
         tc_valid = bool(test_cases) and isinstance(test_cases, list) and isinstance(test_cases[0], dict)
         if not evaluator or not tc_valid:
             return self._create_default_performance_result(consistent=True)
+        test_runner = self._resolve_test_runner(instance, language)
 
         # 级联评估：先用 benchmark 进行一次运行（num_runs=1），若未全部通过则直接返回
         try:
@@ -331,6 +368,7 @@ class PerfAgent:
                 solution=code,
                 test_cases=test_cases,
                 evaluator=evaluator,
+                test_runner=test_runner,
                 num_runs=1,
                 time_limit=self.config.runtime.time_limit,
                 memory_limit=self.config.runtime.memory_limit,
@@ -356,6 +394,7 @@ class PerfAgent:
                 solution=code,
                 test_cases=test_cases,
                 evaluator=evaluator,
+                test_runner=test_runner,
                 num_runs=self.config.runtime.num_runs,
                 time_limit=self.config.runtime.time_limit,
                 memory_limit=self.config.runtime.memory_limit,

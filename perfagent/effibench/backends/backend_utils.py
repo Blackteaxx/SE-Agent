@@ -1,22 +1,22 @@
-import logging
-import multiprocessing
 import os
-import platform
 import queue
 import random
+import logging
+import requests
+import platform
 import subprocess
 import threading
+import multiprocessing
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import cache
-from typing import Any, Protocol, TypeVar
+from typing import Any, Optional, Protocol, Type, TypeVar
 
-import numpy as np
-import requests
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+import numpy as np
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -140,10 +140,10 @@ def calculate_efficiency_integral(times: list[int], mems: list[int]) -> float:
 class CodeExecutionRequest(BaseModel):
     code: str
     language: str
-    libraries: list[str] | None = None
-    stdin: str | None = None
-    time_limit: int | None = None
-    memory_limit: float | None = None
+    libraries: Optional[list[str]] = None
+    stdin: Optional[str] = None
+    time_limit: Optional[int] = None
+    memory_limit: Optional[float] = None
 
 
 class BatchSubmissionRequest(BaseModel):
@@ -165,11 +165,11 @@ class BatchGetSubmissionRequest(BaseModel):
 class CodeExecutionResponse(BaseModel):
     submission_id: int
     status: str = Field(..., description="waiting|processing|done|timeout|error|cancelled|oom")
-    text: str | None = None
-    exit_code: int | None = None
-    runtime: float | None = None
-    memory: float | None = None
-    integral: float | None = None
+    text: Optional[str] = None
+    exit_code: Optional[int] = None
+    runtime: Optional[float] = None
+    memory: Optional[float] = None
+    integral: Optional[float] = None
 
 
 class BatchCodeExecutionResponse(BaseModel):
@@ -217,11 +217,11 @@ class SubmissionRecord:
     id: int
     request: "CodeExecutionRequest"
     status: str = "waiting"
-    exit_code: int | None = None
-    text: str | None = None
-    runtime: float | None = None
-    memory: float | None = None
-    integral: float | None = None
+    exit_code: Optional[int] = None
+    text: Optional[str] = None
+    runtime: Optional[float] = None
+    memory: Optional[float] = None
+    integral: Optional[float] = None
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
@@ -256,10 +256,10 @@ class SandboxSessionProtocol(Protocol):
     def run(
         self,
         code: str,
-        libraries: list | None = None,
-        stdin: str | None = None,
-        time_limit: float | None = None,
-        memory_limit: float | None = None,
+        libraries: Optional[list] = None,
+        stdin: Optional[str] = None,
+        time_limit: Optional[float] = None,
+        memory_limit: Optional[float] = None,
         return_statistics: bool = True,
     ) -> Any:
         """
@@ -275,7 +275,7 @@ class SandboxSessionProtocol(Protocol):
         """
         ...
 
-    def cat_profile(self) -> str | None:
+    def cat_profile(self) -> Optional[str]:
         """Return the profiling information for the last execution."""
         ...
 
@@ -301,11 +301,21 @@ class BaseExecutionManager(ABC):
     }
     """
 
-    def __init__(self, session_class: type[T], num_workers: int | None = None, skip_setup: bool = False):
+    def __init__(
+        self,
+        session_class: Type[T],
+        num_workers: Optional[int] = None,
+        allowed_languages: Optional[list[str]] = None,
+        skip_setup: bool = False,
+    ):
         if num_workers is None:
             num_workers = get_num_physical_cores() - 1
         self.num_workers = num_workers
         self.session_class = session_class
+        # Allowed languages (registry keys). If None, allow all from registry
+        self.allowed_languages = (
+            list(EFFIBENCH_REGISTRY.keys()) if allowed_languages is None else list(allowed_languages)
+        )
 
         # Request queue
         self.req_queue = queue.Queue()
@@ -325,8 +335,10 @@ class BaseExecutionManager(ABC):
             self.setup()
 
     def setup(self):
-        """Initialize session environments for all registered languages."""
+        """Initialize session environments for all registered languages (filtered by allowed_languages)."""
         for lang, config in EFFIBENCH_REGISTRY.items():
+            if lang not in self.allowed_languages:
+                continue
             self._create_initial_session(lang, config)
 
     @abstractmethod
@@ -401,7 +413,10 @@ class BaseExecutionManager(ABC):
                     logging.error(f"[Worker {worker_id}] Received unexpected item type from queue: {type(item)}")
             except Exception as e:
                 # Catch broad exceptions during the loop logic itself (e.g., queue issues)
-                logging.error(f"[Worker {worker_id}] Unhandled error in worker loop: {e}", exc_info=True)
+                logging.error(
+                    f"[Worker {worker_id}] Unhandled error in worker loop: {e}",
+                    exc_info=True,
+                )
             finally:
                 # Mark task done regardless of item type or processing errors inside the loop
                 self.req_queue.task_done()
@@ -420,6 +435,21 @@ class BaseExecutionManager(ABC):
         if not req.language.strip():
             raise HTTPException(status_code=400, detail="No language specified.")
 
+        # Validate allowed languages (accept both registry keys and mapped sandbox langs)
+        allowed_set = set(self.allowed_languages)
+        allowed_set.update(
+            {
+                cfg.get("llm_sandbox_lang")
+                for lang_key, cfg in EFFIBENCH_REGISTRY.items()
+                if lang_key in self.allowed_languages
+            }
+        )
+        if req.language not in allowed_set:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Language '{req.language}' not allowed. Allowed: {sorted(list(allowed_set))}.",
+            )
+
         with self.global_lock:
             sid = self._add_submission_entry(req)
 
@@ -434,9 +464,25 @@ class BaseExecutionManager(ABC):
         # Validate all requests before acquiring the lock
         for req in batch_req.requests:
             if not req.code.strip():
-                raise HTTPException(status_code=400, detail="Request with empty code found in batch.")
+                raise HTTPException(status_code=400, detail=f"Request with empty code found in batch.")
             if not req.language.strip():
-                raise HTTPException(status_code=400, detail="Request with unspecified language found in batch.")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Request with unspecified language found in batch.",
+                )
+            allowed_set = set(self.allowed_languages)
+            allowed_set.update(
+                {
+                    cfg.get("llm_sandbox_lang")
+                    for lang_key, cfg in EFFIBENCH_REGISTRY.items()
+                    if lang_key in self.allowed_languages
+                }
+            )
+            if req.language not in allowed_set:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Language '{req.language}' not allowed in batch. Allowed: {sorted(list(allowed_set))}.",
+                )
 
         submission_ids = []
         # Use smaller critical section to reduce lock contention
@@ -497,7 +543,12 @@ class BaseExecutionManager(ABC):
         req = record.request
 
         try:
-            session = self.get_session(worker_id, req.language)
+            # Map registry language to sandbox language if applicable
+            if req.language in EFFIBENCH_REGISTRY:
+                sandbox_lang = EFFIBENCH_REGISTRY[req.language].get("llm_sandbox_lang", req.language)
+            else:
+                sandbox_lang = req.language
+            session = self.get_session(worker_id, sandbox_lang)
 
             # Filter out libraries that are already installed
             libraries = []
@@ -658,7 +709,6 @@ class BackendManager:
         self._lock = threading.RLock()
         self._random = random.Random()  # Thread-safe random instance
         self._initialize_backends()
-        print(f"Initialized backends: {self._available_backends}")
 
     def _initialize_backends(self):
         """Initialize the backend list from environment variables or provided URLs."""
@@ -702,21 +752,14 @@ class BackendManager:
         """Mark a backend as unavailable after a failed request."""
         with self._lock:
             # Remove from available backends if it's there
-            was_available = url in self._available_backends
-            if was_available:
-                queue_size = self._available_backends[url]
+            if url in self._available_backends:
                 del self._available_backends[url]
-                logging.warning(f"Backend {url} removed from available backends (was queue_size: {queue_size})")
 
             # Add to unavailable backends
             if url not in self._unavailable_backends:  # Ensure not to add duplicates
-                logging.warning(
-                    f"Backend {url} marked as unavailable. Available: {list(self._available_backends.keys())}, Unavailable: {len(self._unavailable_backends) + 1}"
-                )
+                logging.warning(f"Backend {url} marked as unavailable")
                 self._unavailable_backends.add(url)
                 self._last_check_times[url] = time.time()
-            else:
-                logging.debug(f"Backend {url} already marked as unavailable")
 
     def get_available_backend(self):
         """
@@ -728,25 +771,14 @@ class BackendManager:
         with self._lock:
             current_time = time.time()
 
-            logging.debug(
-                f"Getting available backend. Current state - Available: {len(self._available_backends)}, Unavailable: {len(self._unavailable_backends)}"
-            )
-
             # Periodically refresh all available backends' queue sizes
             should_refresh = current_time - self._last_refresh_time >= self._refresh_interval
             if should_refresh:
-                logging.debug(
-                    f"Refreshing backend queue sizes (last refresh: {current_time - self._last_refresh_time:.1f}s ago)"
-                )
                 self._refresh_available_backends(current_time)
                 self._last_refresh_time = current_time
 
             # Recheck unavailable backends
-            unavailable_before = len(self._unavailable_backends)
             self._recheck_unavailable_backends(current_time)
-            unavailable_after = len(self._unavailable_backends)
-            if unavailable_before != unavailable_after:
-                logging.info(f"Backend recheck: {unavailable_before - unavailable_after} backends recovered")
 
             # If we have available backends, select the one with the smallest queue size
             if self._available_backends:
@@ -756,21 +788,10 @@ class BackendManager:
                 ]
 
                 if least_loaded_backends:
-                    selected = self._random.choice(least_loaded_backends)
-                    logging.debug(
-                        f"Selected backend {selected} (queue_size: {min_queue_size}) from {len(least_loaded_backends)} least loaded"
-                    )
-                    return selected
+                    return self._random.choice(least_loaded_backends)  # Return a random one from the least loaded
 
             # If still no backends available after all checks
-            backend_status = {
-                "available": {url: queue_size for url, queue_size in self._available_backends.items()},
-                "unavailable": list(self._unavailable_backends),
-                "last_check_times": {
-                    url: current_time - check_time for url, check_time in self._last_check_times.items()
-                },
-            }
-            logging.error(f"No available backends found after re-checks. Status: {backend_status}")
+            logging.error("No available backends found after re-checks.")
             return None
 
     def _refresh_available_backends(self, current_time):
@@ -850,7 +871,7 @@ def _make_api_request(
     url: str,
     json_data=None,
     params=None,
-    request_timeout: int = 120,
+    request_timeout: int = 60,
     client_error_codes: tuple[int, ...] = (400,),
 ) -> dict:
     """
@@ -872,58 +893,33 @@ def _make_api_request(
         HTTPException: For client errors (400, 404, etc.)
         BackendUnavailableError: For backend unavailability
     """
-    import time
-
-    start_time = time.time()
-    full_url = f"{url}/{endpoint}"
-
     try:
-        logging.debug(f"Making {method.upper()} request to {full_url} with timeout={request_timeout}s")
+        full_url = f"{url}/{endpoint}"
         request_fn = getattr(requests, method.lower())
         response = request_fn(full_url, json=json_data, params=params, timeout=request_timeout)
-
-        elapsed = time.time() - start_time
-        logging.debug(f"Request to {full_url} completed in {elapsed:.2f}s with status {response.status_code}")
 
         # Let client errors pass through directly
         if response.status_code in client_error_codes:
             response.raise_for_status()
         elif not response.ok:
             # For server errors, mark backend as unavailable
-            error_msg = f"Backend server error: {response.status_code} {response.reason} at {full_url}"
-            logging.error(f"{error_msg} (elapsed: {elapsed:.2f}s)")
             get_backend_manager().mark_backend_unavailable(url)
-            raise BackendUnavailableError(error_msg)
+            raise BackendUnavailableError(f"Backend error: {response.status_code} {response.reason}")
 
         return response.json()
     except requests.ConnectionError as e:
-        elapsed = time.time() - start_time
-        error_msg = f"Connection failed to {full_url}: {type(e).__name__}: {e}"
-        logging.error(f"{error_msg} (elapsed: {elapsed:.2f}s, timeout: {request_timeout}s)")
         get_backend_manager().mark_backend_unavailable(url)
-        raise BackendUnavailableError(error_msg) from e
+        raise BackendUnavailableError(f"Failed to connect to backend {url}: {e}") from e
     except requests.Timeout as e:
-        elapsed = time.time() - start_time
-        error_msg = f"Request timeout to {full_url}: {type(e).__name__}: {e}"
-        logging.error(f"{error_msg} (elapsed: {elapsed:.2f}s, timeout: {request_timeout}s)")
         get_backend_manager().mark_backend_unavailable(url)
-        raise BackendUnavailableError(error_msg) from e
+        raise BackendUnavailableError(f"Backend timeout at {url}: {e}") from e
     except requests.RequestException as e:
-        elapsed = time.time() - start_time
         # Let client errors pass through from raise_for_status()
         if hasattr(e, "response") and e.response is not None and e.response.status_code in client_error_codes:
             raise
         # Other exceptions indicate backend issues
-        error_msg = f"Request failed to {full_url}: {type(e).__name__}: {e}"
-        logging.error(f"{error_msg} (elapsed: {elapsed:.2f}s, timeout: {request_timeout}s)")
         get_backend_manager().mark_backend_unavailable(url)
-        raise BackendUnavailableError(error_msg) from e
-    except Exception as e:
-        elapsed = time.time() - start_time
-        error_msg = f"Unexpected error for {full_url}: {type(e).__name__}: {e}"
-        logging.error(f"{error_msg} (elapsed: {elapsed:.2f}s, timeout: {request_timeout}s)")
-        get_backend_manager().mark_backend_unavailable(url)
-        raise BackendUnavailableError(error_msg) from e
+        raise BackendUnavailableError(f"API request failed: {e}") from e
 
 
 def submit_code(
@@ -933,7 +929,7 @@ def submit_code(
     stdin: str | None = None,
     time_limit: int | None = None,
     memory_limit: int | None = None,
-    request_timeout: int = 120,
+    request_timeout: int = 360,
     backend_base_url: str | None = None,
 ) -> str:
     """Submit code to the sandbox and return the submission ID."""
@@ -952,7 +948,7 @@ def submit_code(
 
 def submit_batch(
     requests_data: list[dict],
-    request_timeout: int = 1200,  # Further increased timeout for batch operations
+    request_timeout: int = 360,  # Increased timeout for batch
     backend_base_url: str | None = None,
 ) -> list[int]:
     """Submit a batch of code execution requests to the sandbox."""
@@ -962,16 +958,22 @@ def submit_batch(
     return response["submission_ids"]
 
 
-def get_submission_result(submission_id: str, request_timeout: int = 120, backend_base_url: str | None = None) -> dict:
+def get_submission_result(submission_id: str, request_timeout: int = 360, backend_base_url: str | None = None) -> dict:
     """Retrieve the sandbox result for a given submission ID."""
     url = backend_base_url if backend_base_url else get_backend_url()
     endpoint = f"submission/{submission_id}"
-    return _make_api_request("get", endpoint, url, request_timeout=request_timeout, client_error_codes=(400, 404))
+    return _make_api_request(
+        "get",
+        endpoint,
+        url,
+        request_timeout=request_timeout,
+        client_error_codes=(400, 404),
+    )
 
 
 def get_batch_results(
     submission_ids: list[int],
-    request_timeout: int = 240,  # Further increased timeout for batch operations
+    request_timeout: int = 120,  # Increased timeout for batch
     backend_base_url: str | None = None,
 ) -> list[dict]:
     """Retrieve the sandbox results for a batch of submission IDs."""
@@ -981,8 +983,14 @@ def get_batch_results(
     return response["results"]
 
 
-def cancel_submission(submission_id: str, request_timeout: int = 120, backend_base_url: str | None = None) -> dict:
+def cancel_submission(submission_id: str, request_timeout: int = 60, backend_base_url: str | None = None) -> dict:
     """Cancel a submission that is currently waiting to be processed."""
     url = backend_base_url if backend_base_url else get_backend_url()
     endpoint = f"cancel/{submission_id}"
-    return _make_api_request("post", endpoint, url, request_timeout=request_timeout, client_error_codes=(400, 404))
+    return _make_api_request(
+        "post",
+        endpoint,
+        url,
+        request_timeout=request_timeout,
+        client_error_codes=(400, 404),
+    )

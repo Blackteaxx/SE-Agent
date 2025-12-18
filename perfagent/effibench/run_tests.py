@@ -69,6 +69,8 @@ def run_tests(
     backend_retries: int = 5,
     eval_timeout: int = 10,
     polling_interval: int = 5,
+    backend_retry_initial_wait: int = 10,
+    backend_retry_max_wait: int = 60,
 ) -> list[dict]:
     code = get_full_code(lang, solution, test_runner) if test_runner else solution
     sandbox_lang = get_sandbox_lang(lang)
@@ -129,20 +131,25 @@ def run_tests(
                     assert sid in pending_ids, f"Submission ID {sid} not in pending IDs"
 
                     if result_data["status"] not in ("waiting", "processing"):
-                        all_results[sid_to_tid[sid]] = {**result_data, **test_cases[sid_to_tid[sid]]}
+                        all_results[sid_to_tid[sid]] = {
+                            **result_data,
+                            **test_cases[sid_to_tid[sid]],
+                        }
                         pending_ids.remove(sid)
                         new_result_ids.add(sid)
                 new_results = [all_results[sid_to_tid[sid]] for sid in new_result_ids]
 
                 try:
                     raise_error(new_results, code)
-                except Exception:
+                except Exception as e:
                     if raise_on_error or early_stop:
                         if pending_ids:
                             with ThreadPoolExecutor(max_workers=len(pending_ids)) as cancel_executor:
                                 cancel_futures = [
                                     cancel_executor.submit(
-                                        cancel_submission, sid_to_cancel, backend_base_url=backend_base_url
+                                        cancel_submission,
+                                        sid_to_cancel,
+                                        backend_base_url=backend_base_url,
                                     )
                                     for sid_to_cancel in pending_ids
                                 ]
@@ -172,7 +179,10 @@ def run_tests(
                                     test_input if len(test_input) < 2000 else test_input[:2000] + "...truncated..."
                                 )
                                 test_case_str = json.dumps(
-                                    {"input": test_input_display, "output": result_data.get("output", "")}
+                                    {
+                                        "input": test_input_display,
+                                        "output": result_data.get("output", ""),
+                                    }
                                 )
                                 output_display = output if len(output) < 2000 else output[:2000] + "...truncated..."
                                 raise AssertionError(
@@ -186,7 +196,10 @@ def run_tests(
                                     test_input if len(test_input) < 2000 else test_input[:2000] + "...truncated..."
                                 )
                                 test_case_str = json.dumps(
-                                    {"input": test_input_display, "output": result_data.get("output", "")}
+                                    {
+                                        "input": test_input_display,
+                                        "output": result_data.get("output", ""),
+                                    }
                                 )
                                 raise EvaluatorTimeoutError(
                                     f"Solution Evaluator timed out after {eval_timeout} seconds.\nTest case: {test_case_str}\nCode: {code}\n"
@@ -203,9 +216,14 @@ def run_tests(
 
         except BackendUnavailableError as e:
             if retry_count < backend_retries:
+                wait_s = backend_retry_initial_wait * (2**retry_count)
+                if wait_s > backend_retry_max_wait:
+                    wait_s = backend_retry_max_wait
                 logging.warning(
-                    f"Backend unavailable during execution (attempt {retry_count + 1}/{backend_retries + 1}): {e}. Retrying..."
+                    f"Backend unavailable during execution (attempt {retry_count + 1}/{backend_retries + 1}): {e}. Retrying after {wait_s}s..."
                 )
+                time.sleep(wait_s)
                 continue
             logging.error(f"All backends failed after {backend_retries} retries: {e}")
             raise
+    return None

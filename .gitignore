@@ -122,3 +122,4 @@ configs/*
 tmp/*
 programs/*
 analysis/*
+report/*

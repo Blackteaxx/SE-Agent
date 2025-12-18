@@ -5,16 +5,16 @@ LLM 客户端，支持多种模型和API端点
 import json
 import logging
 import os
-import random
 import threading
 import time
+import random
 from pathlib import Path
 from typing import Any
 
 from openai import OpenAI
 
 try:
-    from openai import APIConnectionError, APIError, APITimeoutError, BadRequestError, RateLimitError
+    from openai import APIError, RateLimitError, APITimeoutError, APIConnectionError, BadRequestError
 except Exception:
     APIError = Exception
     RateLimitError = Exception

@@ -235,11 +235,24 @@
         <select id="instance-select">
             <option value="">Loading instances...</option>
         </select>
+
+        <label for="compare-select" style="margin-left: 20px;">Compare with:</label>
+        <select id="compare-select">
+            <option value="">-- None --</option>
+        </select>
     </div>
     <div id="container">
         <div id="left-panel">
             <div id="cy"></div>
             <div class="splitter-vertical" id="splitter-vert"></div>
+            <div class="control-group" style="display: flex; align-items: center; gap: 10px; padding: 5px; background: #f8f9fa; border-bottom: 1px solid #ddd;">
+                <label style="font-size: 12px; font-weight: bold;">Y-Axis Range:</label>
+                <input type="number" id="y-min" placeholder="Min" style="width: 60px; padding: 2px; border: 1px solid #ccc; border-radius: 4px; font-size: 12px;">
+                <span>-</span>
+                <input type="number" id="y-max" placeholder="Max" style="width: 60px; padding: 2px; border: 1px solid #ccc; border-radius: 4px; font-size: 12px;">
+                <button id="update-axis-btn" style="padding: 2px 8px; background-color: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Update</button>
+                <button id="reset-axis-btn" style="padding: 2px 8px; background-color: #95a5a6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Auto</button>
+            </div>
             <div id="chart-container">
                 <canvas id="performanceChart"></canvas>
             </div>
@@ -382,6 +395,7 @@
             let cy = null;
             let chart = null;
             let rawData = null;
+            let compareData = null;
             let currentInstanceKey = null;
 
             // Initialize Chart.js
@@ -393,7 +407,11 @@
                     .then(response => response.json())
                     .then(dirs => {
                         const dirSelect = document.getElementById('dir-select');
+                        const compareSelect = document.getElementById('compare-select');
+                        
                         dirSelect.innerHTML = '';
+                        // Initialize compare select with "None"
+                        compareSelect.innerHTML = '<option value="">-- None --</option>';
                         
                         if (dirs.length === 0) {
                             const option = document.createElement('option');
@@ -402,13 +420,19 @@
                             return;
                         }
 
-                        // Add a placeholder or select first?
-                        // Let's select first for convenience, but trigger instance loading
+                        // Populate both dropdowns
                         dirs.forEach(dir => {
+                            // Main experiment select
                             const option = document.createElement('option');
                             option.value = dir;
                             option.text = dir;
                             dirSelect.add(option);
+
+                            // Compare experiment select
+                            const compareOption = document.createElement('option');
+                            compareOption.value = dir;
+                            compareOption.text = dir;
+                            compareSelect.add(compareOption);
                         });
 
                         if (dirs.length > 0) {
@@ -418,6 +442,24 @@
                         // Add change event listener
                         dirSelect.addEventListener('change', function() {
                             fetchInstances(this.value);
+                            // Also trigger data reload if we have an instance selected (which we might lose if we change dir, but logic handles it)
+                        });
+                        
+                        // Compare select listener
+                        compareSelect.addEventListener('change', function() {
+                            const mainDir = document.getElementById('dir-select').value;
+                            const compareDir = this.value;
+                            const instance = document.getElementById('instance-select').value;
+                            
+                            if (compareDir && instance && mainDir) {
+                                loadCompareData(compareDir, instance);
+                            } else {
+                                // If cleared, remove comparison line
+                                compareData = null;
+                                if (rawData && currentInstanceKey) {
+                                    renderChart(rawData[currentInstanceKey]);
+                                }
+                            }
                         });
                     })
                     .catch(err => {
@@ -475,9 +517,17 @@
             // Global listener for instance change
             document.getElementById('instance-select').addEventListener('change', function() {
                 const subdir = document.getElementById('dir-select').value;
+                const compareDir = document.getElementById('compare-select').value;
                 const instance = this.value;
+                
                 if (subdir && instance) {
+                    // Reset compare data when instance changes to avoid mismatch
+                    compareData = null; 
                     loadInstanceData(subdir, instance);
+                    
+                    if (compareDir) {
+                        loadCompareData(compareDir, instance);
+                    }
                 }
             });
 
@@ -498,6 +548,35 @@
                     .catch(error => {
                         console.error('Error loading data:', error);
                         // Show error in UI
+                    });
+            }
+            
+            // Function to load comparison data
+            function loadCompareData(subdir, instance) {
+                console.log(`Loading comparison data for ${instance} from ${subdir}`);
+                fetch('/api/data?subdir=' + encodeURIComponent(subdir) + '&instance=' + encodeURIComponent(instance))
+                    .then(response => response.json())
+                    .then(data => {
+                        // Check if we got valid data
+                        const keys = Object.keys(data);
+                        if (keys.length > 0 && keys.includes(instance)) {
+                            compareData = data[instance];
+                            console.log('Comparison data loaded:', compareData);
+                            // Re-render chart with both datasets
+                            if (rawData && currentInstanceKey && rawData[currentInstanceKey]) {
+                                renderChart(rawData[currentInstanceKey]);
+                            }
+                        } else {
+                            console.warn('No data found for comparison instance');
+                            alert('Instance not found in comparison experiment');
+                            compareData = null;
+                            if (rawData && currentInstanceKey) {
+                                renderChart(rawData[currentInstanceKey]);
+                            }
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error loading comparison data:', error);
                     });
             }
 
@@ -975,107 +1054,136 @@
                 // Extract all solutions
                 const allSolutions = [];
                 
-                Object.keys(instanceData).forEach(key => {
-                    if (key === 'problem') return;
-                    const solution = instanceData[key];
-                    
-                    let iter = solution.iteration;
-                    let perf = solution.performance;
-                    let label = solution.label || key;
-
-                    // Try to find iteration in evolution_steps if missing
-                    if (iter === undefined && solution.summary && solution.summary.evolution_steps) {
-                         const steps = solution.summary.evolution_steps;
-                         if (steps.length > 0) {
-                             iter = steps[steps.length - 1].iteration;
-                         }
-                    }
-
-                    if (iter !== undefined) {
-                        // Handle performance
-                        let val = Infinity;
-                        if (perf !== undefined && perf !== "Infinity") {
-                             if (typeof perf === 'string') {
-                                 val = parseFloat(perf);
-                             } else {
-                                 val = perf;
-                             }
-                             if (isNaN(val)) val = Infinity;
-                        }
+                // Helper to extract points
+                function extractPoints(data, isMain = true) {
+                    const points = [];
+                    Object.keys(data).forEach(key => {
+                        if (key === 'problem' || key === 'llm_io') return;
+                        const solution = data[key];
                         
-                        // Add to all solutions list if we have valid iteration
-                        if (val !== Infinity) {
-                            allSolutions.push({
-                                x: parseInt(iter),
-                                y: val,
-                                label: label,
-                                solutionKey: key,
-                                info: solution
-                            });
+                        let iter = solution.iteration;
+                        let perf = solution.performance;
+                        let label = solution.label || key;
+
+                        // Try to find iteration in evolution_steps if missing
+                        if (iter === undefined && solution.summary && solution.summary.evolution_steps) {
+                             const steps = solution.summary.evolution_steps;
+                             if (steps.length > 0) {
+                                 iter = steps[steps.length - 1].iteration;
+                             }
                         }
-                    }
-                });
 
-                // Calculate Best Performance Line (Pareto Frontier for Min Performance)
-                // We need to find the minimum performance up to each iteration
-                // Group by iteration first to find best per iteration
-                const bestPerIter = {};
-                allSolutions.forEach(sol => {
-                    if (!bestPerIter[sol.x] || sol.y < bestPerIter[sol.x].y) {
-                        bestPerIter[sol.x] = sol;
-                    }
-                });
+                        if (iter !== undefined) {
+                            // Handle performance
+                            let val = Infinity;
+                            if (perf !== undefined && perf !== "Infinity") {
+                                 if (typeof perf === 'string') {
+                                     val = parseFloat(perf);
+                                 } else {
+                                     val = perf;
+                                 }
+                                 if (isNaN(val)) val = Infinity;
+                            }
+                            
+                            // Add to all solutions list if we have valid iteration
+                            if (val !== Infinity) {
+                                points.push({
+                                    x: parseInt(iter),
+                                    y: val,
+                                    label: label,
+                                    solutionKey: key,
+                                    info: isMain ? solution : null // Only store info for main dataset to avoid confusion or clicking wrong things
+                                });
+                            }
+                        }
+                    });
+                    return points;
+                }
 
-                // Create sorted iterations list
-                const sortedIters = Object.keys(bestPerIter).map(i => parseInt(i)).sort((a, b) => a - b);
+                allSolutions.push(...extractPoints(instanceData));
                 
-                // Propagate best performance forward
-                const bestLineData = [];
-                if (sortedIters.length > 0) {
-                    let currentBest = bestPerIter[sortedIters[0]].y;
-                    let currentBestLabel = bestPerIter[sortedIters[0]].label;
-                    
-                    // Add first point
-                    bestLineData.push({
-                        x: sortedIters[0],
-                        y: currentBest,
-                        label: currentBestLabel,
-                        isTurningPoint: true,
-                        improvement: null // First point has no improvement
+                // Calculate max iteration across all datasets
+                let globalMaxIter = 0;
+                allSolutions.forEach(p => globalMaxIter = Math.max(globalMaxIter, p.x));
+                
+                let comparePoints = [];
+                if (compareData) {
+                    comparePoints = extractPoints(compareData, false);
+                    comparePoints.forEach(p => globalMaxIter = Math.max(globalMaxIter, p.x));
+                }
+
+                // Calculate Best Performance Line (Pareto Frontier)
+                function calculateBestLine(points, maxIter) {
+                    const bestPerIter = {};
+                    points.forEach(sol => {
+                        if (!bestPerIter[sol.x] || sol.y < bestPerIter[sol.x].y) {
+                            bestPerIter[sol.x] = sol;
+                        }
                     });
 
-                    for (let i = 1; i < sortedIters.length; i++) {
-                        const iter = sortedIters[i];
-                        const iterBest = bestPerIter[iter];
+                    const sortedIters = Object.keys(bestPerIter).map(i => parseInt(i)).sort((a, b) => a - b);
+                    const lineData = [];
+                    
+                    if (sortedIters.length > 0) {
+                        let currentBest = bestPerIter[sortedIters[0]].y;
+                        let currentBestLabel = bestPerIter[sortedIters[0]].label;
                         
-                        if (iterBest.y < currentBest) {
-                            // Improvement found
-                            // Calculate relative improvement: (old - new) / old * 100
-                            const improvement = ((currentBest - iterBest.y) / currentBest) * 100;
+                        lineData.push({
+                            x: sortedIters[0],
+                            y: currentBest,
+                            label: currentBestLabel,
+                            isTurningPoint: true,
+                            improvement: null
+                        });
+
+                        for (let i = 1; i < sortedIters.length; i++) {
+                            const iter = sortedIters[i];
+                            const iterBest = bestPerIter[iter];
                             
-                            currentBest = iterBest.y;
-                            currentBestLabel = iterBest.label;
-                            
-                            bestLineData.push({
-                                x: iter,
+                            if (iterBest.y < currentBest) {
+                                const improvement = ((currentBest - iterBest.y) / currentBest) * 100;
+                                currentBest = iterBest.y;
+                                currentBestLabel = iterBest.label;
+                                
+                                lineData.push({
+                                    x: iter,
+                                    y: currentBest,
+                                    label: currentBestLabel,
+                                    isTurningPoint: true,
+                                    improvement: improvement
+                                });
+                            } else {
+                                lineData.push({
+                                    x: iter,
+                                    y: currentBest,
+                                    label: currentBestLabel,
+                                    isTurningPoint: false,
+                                    improvement: null
+                                });
+                            }
+                        }
+                        
+                        // Extend to maxIter if needed
+                        const lastPoint = lineData[lineData.length - 1];
+                        if (lastPoint.x < maxIter) {
+                            lineData.push({
+                                x: maxIter,
                                 y: currentBest,
                                 label: currentBestLabel,
-                                isTurningPoint: true,
-                                improvement: improvement
+                                isTurningPoint: false,
+                                improvement: null
                             });
-                        } else {
-                            // No improvement.
-                            // User wants: "Pareto front doesn't need points everywhere, only connect turning points"
-                            // So we do NOT add a point here if it's just a flat line extension.
-                            // The line chart will automatically connect the previous turning point to the next one.
                         }
                     }
-                    
-                    // However, if the last point wasn't a turning point, we might want to extend the line to the end?
-                    // Or just let it end at the last turning point?
-                    // "Pareto front" usually implies the best found SO FAR.
-                    // If we skip intermediate points, the line will just connect turning points directly.
-                    // This matches "connect turning points directly".
+                    return lineData;
+                }
+
+                const bestLineData = calculateBestLine(allSolutions, globalMaxIter);
+                
+                // Calculate Comparison Line if data exists
+                let compareLineData = [];
+                if (compareData) {
+                    compareLineData = calculateBestLine(comparePoints, globalMaxIter);
                 }
 
                 if (chart) {
@@ -1087,74 +1195,96 @@
                     Chart.register(ChartDataLabels);
                 }
 
+                const datasets = [
+                    {
+                        label: 'All Solutions',
+                        data: allSolutions,
+                        backgroundColor: 'rgba(100, 100, 100, 0.6)',
+                        borderColor: 'rgba(100, 100, 100, 0.8)',
+                        pointRadius: 4,
+                        pointHoverRadius: 6,
+                        order: 3,
+                        datalabels: { display: false }
+                    },
+                    {
+                        type: 'line',
+                        label: 'Best Performance (Current)',
+                        data: bestLineData,
+                        borderColor: '#e74c3c',
+                        backgroundColor: 'rgba(231, 76, 60, 0.05)',
+                        borderWidth: 3,
+                        pointBackgroundColor: '#e74c3c',
+                        pointBorderColor: '#fff',
+                        pointRadius: 6,
+                        pointHoverRadius: 8,
+                        tension: 0,
+                        fill: false,
+                        order: 1,
+                        datalabels: {
+                            align: function(context) { return context.dataIndex % 2 === 0 ? 'top' : 'bottom'; },
+                            anchor: function(context) { return context.dataIndex % 2 === 0 ? 'start' : 'end'; },
+                            offset: 20,
+                            backgroundColor: '#fdfea3', 
+                            color: '#333',
+                            borderColor: '#333',
+                            borderWidth: 1,
+                            borderRadius: 4,
+                            font: { weight: 'bold', size: 11 },
+                            padding: 6,
+                            formatter: function(value, context) {
+                                let label = value.label;
+                                if (value.improvement !== null && value.improvement !== undefined) {
+                                    label += `\n${value.y.toFixed(4)}`;
+                                    label += `\n(↓${value.improvement.toFixed(1)}%)`;
+                                } else {
+                                    label += `\n${value.y.toFixed(4)}`;
+                                }
+                                return label;
+                            },
+                            display: function(context) { return context.dataset.data[context.dataIndex].isTurningPoint; }
+                        }
+                    }
+                ];
+
+                if (compareLineData.length > 0) {
+                    datasets.push({
+                        type: 'line',
+                        label: 'Best Performance (Compare)',
+                        data: compareLineData,
+                        borderColor: '#3498db', // Blue for comparison
+                        backgroundColor: 'rgba(52, 152, 219, 0.05)',
+                        borderWidth: 3,
+                        pointBackgroundColor: '#3498db',
+                        pointBorderColor: '#fff',
+                        pointRadius: 6,
+                        pointHoverRadius: 8,
+                        tension: 0,
+                        fill: false,
+                        order: 2,
+                        datalabels: {
+                            // Simplify labels for comparison line or just hide to avoid clutter?
+                            // Let's show but maybe with different style or only value
+                            align: 'right',
+                            anchor: 'center',
+                            backgroundColor: '#e8f6f3',
+                            color: '#2c3e50',
+                            borderColor: '#2c3e50',
+                            borderWidth: 1,
+                            borderRadius: 4,
+                            font: { weight: 'bold', size: 10 },
+                            padding: 4,
+                            formatter: function(value) {
+                                return value.y.toFixed(4);
+                            },
+                            display: function(context) { return context.dataset.data[context.dataIndex].isTurningPoint; }
+                        }
+                    });
+                }
+
                 chart = new Chart(ctx, {
                     type: 'scatter',
-                    // Remove local plugins array if registered globally, or keep if specific
-                    // plugins: [ChartDataLabels], 
                     data: {
-                        datasets: [
-                            {
-                                label: 'All Solutions',
-                                data: allSolutions,
-                                backgroundColor: 'rgba(100, 100, 100, 0.6)',
-                                borderColor: 'rgba(100, 100, 100, 0.8)',
-                                pointRadius: 4,
-                                pointHoverRadius: 6,
-                                order: 2, // Draw behind line
-                                datalabels: {
-                                    display: false // Hide labels for scatter points
-                                }
-                            },
-                            {
-                                type: 'line',
-                                label: 'Pareto Frontier (Best Perf)',
-                                data: bestLineData,
-                                borderColor: '#e74c3c', // Red line like user example
-                                backgroundColor: 'rgba(231, 76, 60, 0.05)',
-                                borderWidth: 3,
-                                pointBackgroundColor: '#e74c3c',
-                                pointBorderColor: '#fff',
-                                pointRadius: 6, // Highlight turning points
-                                pointHoverRadius: 8,
-                                tension: 0,
-                                fill: false,
-                                order: 1, // Draw on top
-                                datalabels: {
-                                    align: function(context) {
-                                        // Alternate label positions to reduce overlap
-                                        // Or base it on slope? For simplicity, alternate top/bottom or just push further away
-                                        return context.dataIndex % 2 === 0 ? 'top' : 'bottom';
-                                    },
-                                    anchor: function(context) {
-                                        return context.dataIndex % 2 === 0 ? 'start' : 'end';
-                                    },
-                                    offset: function(context) {
-                                        // Stagger distance
-                                        return context.dataIndex % 2 === 0 ? 20 : 20;
-                                    },
-                                    backgroundColor: '#fdfea3', 
-                                    color: '#333',
-                                    borderColor: '#333',
-                                    borderWidth: 1,
-                                    borderRadius: 4,
-                                    font: {
-                                        weight: 'bold',
-                                        size: 11
-                                    },
-                                    padding: 6,
-                                    formatter: function(value, context) {
-                                        let label = value.label;
-                                        if (value.improvement !== null && value.improvement !== undefined) {
-                                            label += `\n(↓${value.improvement.toFixed(1)}%)`;
-                                        }
-                                        return label;
-                                    },
-                                    display: function(context) {
-                                        return context.dataset.data[context.dataIndex].isTurningPoint;
-                                    }
-                                }
-                            }
-                        ]
+                        datasets: datasets
                     },
                     plugins: [{
                         id: 'connectorLines',
@@ -1234,7 +1364,7 @@
                         plugins: {
                             title: {
                                 display: true,
-                                text: 'Performance Analysis (Pareto Frontier)',
+                                text: 'Performance Analysis',
                                 font: { size: 16, family: "'Segoe UI', sans-serif" },
                                 padding: 20
                             },
@@ -1242,7 +1372,7 @@
                                 callbacks: {
                                     label: function(context) {
                                         const point = context.raw;
-                                        return `${point.label}: ${point.y.toFixed(4)}s (Iter ${point.x})`;
+                                        return `${point.label}: ${point.y.toFixed(4)} (Iter ${point.x})`;
                                     }
                                 }
                             },
@@ -1258,10 +1388,44 @@
                                 title: { display: true, text: 'Iteration', font: { weight: 'bold' } }
                             },
                             y: {
-                                title: { display: true, text: 'Performance (Runtime)', font: { weight: 'bold' } }
+                                title: { display: true, text: 'Performance (Integral)', font: { weight: 'bold' } }
                             }
                         }
                     }
+                });
+
+                // Setup Axis Controls
+                document.getElementById('update-axis-btn').addEventListener('click', function() {
+                    if (!chart) return;
+                    
+                    const minVal = parseFloat(document.getElementById('y-min').value);
+                    const maxVal = parseFloat(document.getElementById('y-max').value);
+                    
+                    if (!isNaN(minVal)) {
+                        chart.options.scales.y.min = minVal;
+                    } else {
+                        delete chart.options.scales.y.min;
+                    }
+                    
+                    if (!isNaN(maxVal)) {
+                        chart.options.scales.y.max = maxVal;
+                    } else {
+                        delete chart.options.scales.y.max;
+                    }
+                    
+                    chart.update();
+                });
+
+                document.getElementById('reset-axis-btn').addEventListener('click', function() {
+                    if (!chart) return;
+                    
+                    document.getElementById('y-min').value = '';
+                    document.getElementById('y-max').value = '';
+                    
+                    delete chart.options.scales.y.min;
+                    delete chart.options.scales.y.max;
+                    
+                    chart.update();
                 });
             }
         });

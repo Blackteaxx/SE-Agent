@@ -19,11 +19,12 @@
 
 import argparse
 import concurrent.futures
+import contextlib
 import os
 import shutil
+import signal
 import subprocess
 import sys
-import signal
 import threading
 import time
 from datetime import datetime
@@ -51,6 +52,51 @@ def _ensure_abs(path_like: str | Path, base: Path) -> Path:
 def _discover_instances(instances_dir: Path) -> list[Path]:
     """枚举实例 JSON 文件。"""
     return sorted(instances_dir.glob("*.json"))
+
+
+def _apply_order_file(inst_files: list[Path], order_file: Path) -> list[Path]:
+    """
+    根据 order_file 指定的顺序对 inst_files 进行过滤和排序。
+    order_file 每一行是一个任务名（stem）或文件名（name）。
+    """
+    if not order_file.exists():
+        print(f"Warning: Order file {order_file} not found. Ignoring.")
+        return inst_files
+
+    with open(order_file, "r", encoding="utf-8") as f:
+        lines = [line.strip() for line in f if line.strip()]
+
+    # 建立查找表
+    name_to_path = {p.name: p for p in inst_files}
+    stem_to_path = {p.stem: p for p in inst_files}
+
+    ordered_files = []
+    seen_paths = set()
+
+    print(f"正在根据 {order_file} 调整任务顺序...")
+    for line in lines:
+        target = None
+        # 1. 尝试文件名全匹配
+        if line in name_to_path:
+            target = name_to_path[line]
+        # 2. 尝试 stem 匹配
+        elif line in stem_to_path:
+            target = stem_to_path[line]
+        # 3. 尝试补全 .json 后匹配
+        elif not line.lower().endswith(".json"):
+            line_json = line + ".json"
+            if line_json in name_to_path:
+                target = name_to_path[line_json]
+
+        if target:
+            if target not in seen_paths:
+                ordered_files.append(target)
+                seen_paths.add(target)
+        else:
+            print(f"  Warning: Order file 中的任务 '{line}' 未在实例目录中找到，跳过。")
+
+    print(f"  调整后: {len(inst_files)} -> {len(ordered_files)} 个实例")
+    return ordered_files
 
 
 def _prepare_temp_space(inst_files: list[Path], tmp_root: Path) -> dict[str, Path]:
@@ -262,6 +308,9 @@ def main():
     parser.add_argument("--output-dir", help="覆盖配置中的 output_dir（可选，用于续跑或指定输出根目录）")
     parser.add_argument("--limit", type=int, help="仅处理前 N 个实例（快速试跑）")
     parser.add_argument("--dry-run", action="store_true", help="仅预览命令，不实际执行")
+    parser.add_argument(
+        "--order-file", help="指定任务执行顺序的文件路径（每行一个任务名/文件名），若指定则仅执行文件中的任务"
+    )
 
     args = parser.parse_args()
 
@@ -276,6 +325,11 @@ def main():
         inst_dir = _ensure_abs((base_cfg.get("instances", {}) or {}).get("instances_dir", "instances"), project_root)
 
     inst_files = _discover_instances(inst_dir)
+
+    # 若指定了顺序文件，则进行过滤和排序
+    if args.order_file:
+        inst_files = _apply_order_file(inst_files, _ensure_abs(args.order_file, project_root))
+
     if args.limit is not None:
         inst_files = inst_files[: max(0, int(args.limit))]
 
@@ -324,7 +378,7 @@ def main():
     i = 0
     successes = 0
     failures = 0
-    print(f"准备运行 {total} 个实例；并行度 = {max_parallel}；模式 = {args.mode}；dry_run = {args.dry_run}")
+    # print(f"准备运行 {total} 个实例；并行度 = {max_parallel}；模式 = {args.mode}；dry_run = {args.dry_run}")
 
     # 准备一个全局列表来跟踪正在运行的子进程
     active_processes: list[subprocess.Popen] = []
@@ -388,9 +442,21 @@ def main():
     signal.signal(signal.SIGTERM, _signal_handler)
 
     # 包装 subprocess.run 以便跟踪 Popen 对象
-    def _run_process(cmd, cwd):
+    def _run_process(name, cmd, cwd):
+        with stats_lock:
+            stats["started"] += 1
+            stats["running"] += 1
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{now_str}] 开始任务: {name}")
+
         try:
-            with subprocess.Popen(cmd, cwd=cwd, text=True, start_new_session=True) as proc:
+            # 使用 DEVNULL 抑制输出，除非 debug 需要
+            with subprocess.Popen(
+                cmd, cwd=cwd, text=True, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            ) as proc:
+                # with subprocess.Popen(
+                #     cmd, cwd=cwd, text=True, start_new_session=True
+                # ) as proc:
                 with active_processes_lock:
                     active_processes.append(proc)
 
@@ -403,6 +469,10 @@ def main():
                             active_processes.remove(proc)
         except Exception as e:
             raise e
+        finally:
+            with stats_lock:
+                stats["running"] -= 1
+                stats["completed"] += 1
 
     if args.dry_run:
         for name in names:
@@ -413,38 +483,91 @@ def main():
     else:
         from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
+        # 初始化统计数据
+        stats = {
+            "started": 0,
+            "running": 0,
+            "completed": 0,
+        }
+        stats_lock = threading.Lock()
+
+        # 初始打印一次
+        def _print_status():
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with stats_lock:
+                run = stats["running"]
+                start = stats["started"]
+                comp = stats["completed"]
+            # Remaining = Total - Started
+            rem = total - start
+            print(
+                f"[{now_str}] STATUS: Running {run}/{max_parallel} | Started {start} | Completed {comp} | Remaining {rem}"
+            )
+
+        _print_status()
+        last_print_time = time.time()
+
         with ThreadPoolExecutor(max_workers=max_parallel) as executor:
             exec_ctx["executor"] = executor
             future_map: dict[concurrent.futures.Future, str] = {}
-            for name in names:
+
+            def _submit_by_index(idx: int):
+                n = names[idx]
+                cfg_path = per_instance_cfg_paths[n]
+                c = _build_perf_cmd(cfg_path, args.mode, project_root)
+                f = executor.submit(_run_process, n, c, cwd=str(project_root))
+                future_map[f] = n
+                exec_ctx["futures"].append(f)
+                return f
+
+            next_idx = 0
+            initial = min(max_parallel, total)
+            for _ in range(initial):
                 if stop_event.is_set():
                     break
-                cfg_path = per_instance_cfg_paths[name]
-                cmd = _build_perf_cmd(cfg_path, args.mode, project_root)
-                fut = executor.submit(_run_process, cmd, cwd=str(project_root))
-                future_map[fut] = name
-                exec_ctx["futures"].append(fut)
+                _submit_by_index(next_idx)
+                next_idx += 1
 
             remaining = set(future_map.keys())
             while remaining:
                 if stop_event.is_set():
                     break
-                done, not_done = wait(remaining, timeout=0.5, return_when=FIRST_COMPLETED)
+
+                now = time.time()
+                if now - last_print_time >= 15:
+                    _print_status()
+                    last_print_time = now
+
+                done, not_done = wait(remaining, timeout=1.0, return_when=FIRST_COMPLETED)
+                new_futs = []
                 for fut in done:
-                    name = future_map.get(fut, "unknown")
+                    n = future_map.get(fut, "unknown")
                     try:
                         res = fut.result()
                         rc = getattr(res, "returncode", None)
+                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        print(f"[{now_str}] 完成任务: {n} (rc={rc})")
                         if rc == 0:
-                            print(f"✅ 完成实例: {name}")
                             successes += 1
                         else:
-                            print(f"❌ 失败实例: {name}（返回码 {rc}）")
                             failures += 1
-                    except Exception as e:
-                        print(f"❌ 失败实例: {name}（异常 {e}）")
+                    except Exception:
                         failures += 1
-                remaining = not_done
+                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        print(f"[{now_str}] 完成任务: {n} (异常)")
+
+                    if not stop_event.is_set() and next_idx < total:
+                        next_name = names[next_idx]
+                        nf = _submit_by_index(next_idx)
+                        new_futs.append(nf)
+                        next_idx += 1
+                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        print(f"[{now_str}] 启动新任务: {next_name}")
+
+                remaining = not_done.union(set(new_futs))
+
+            # Final status
+            _print_status()
 
             # 如果收到停止信号，尝试取消剩余任务
             if stop_event.is_set():
@@ -462,7 +585,8 @@ def main():
 
     if not args.dry_run:
         try:
-            res = collect_outputs(base_root_dir, names)
+            with contextlib.redirect_stdout(open(os.devnull, "w")):
+                res = collect_outputs(base_root_dir, names)
             print(f"聚合 traj.pool: {res.get('traj_pool')}")
             print(f"聚合 all_hist.json: {res.get('all_hist')}")
             print(f"聚合 final.json: {res.get('final')}")

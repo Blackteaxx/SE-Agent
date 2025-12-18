@@ -131,7 +131,7 @@ def run_single_instance(config: PerfAgentConfig, instance_path: Path, base_dir: 
                 )
             pred_file = instance_output_dir / f"{task_name}.pred"
             with open(pred_file, "w", encoding="utf-8") as pf:
-                pf.write(submission_code or "")
+                pf.write((submission_code or ""))
             logger.info(f"写出预测结果: {pred_file}")
         except Exception as e:
             logger.error(f"写出 .pred 失败: {e}")
