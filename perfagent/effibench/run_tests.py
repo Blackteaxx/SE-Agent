@@ -72,6 +72,7 @@ def run_tests(
     backend_retry_initial_wait: int = 10,
     backend_retry_max_wait: int = 60,
     polling_timeout: int = 900,  # Total timeout for polling loop (15 minutes default)
+    missing_result_max_retries: int = 3,  # Max retries when results go missing (backend restart)
 ) -> list[dict]:
     code = get_full_code(lang, solution, test_runner) if test_runner else solution
     sandbox_lang = get_sandbox_lang(lang)
@@ -123,6 +124,7 @@ def run_tests(
             pending_ids = set(sids)
 
             polling_start_time = time.time()
+            consecutive_missing_count = 0
 
             while len(pending_ids):
                 # Check for polling timeout
@@ -135,6 +137,24 @@ def run_tests(
                 time.sleep(polling_interval)
 
                 batch_results = get_batch_results(list(pending_ids), backend_base_url=backend_base_url)
+
+                # Detect missing submissions (backend may have restarted)
+                returned_sids = {r["submission_id"] for r in batch_results}
+                missing_sids = pending_ids - returned_sids
+                if missing_sids:
+                    consecutive_missing_count += 1
+                    logging.warning(
+                        f"Backend returned {len(batch_results)} results but {len(missing_sids)} submissions missing "
+                        f"(attempt {consecutive_missing_count}/{missing_result_max_retries}). "
+                        f"Missing IDs: {sorted(missing_sids)[:5]}{'...' if len(missing_sids) > 5 else ''}"
+                    )
+                    if consecutive_missing_count >= missing_result_max_retries:
+                        raise BackendUnavailableError(
+                            f"Submissions lost after {missing_result_max_retries} retries. "
+                            f"Backend may have restarted. Missing {len(missing_sids)} submissions."
+                        )
+                else:
+                    consecutive_missing_count = 0
 
                 new_result_ids = set()
                 for result_data in batch_results:
