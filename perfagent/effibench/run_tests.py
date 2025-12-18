@@ -71,6 +71,8 @@ def run_tests(
     polling_interval: int = 5,
     backend_retry_initial_wait: int = 10,
     backend_retry_max_wait: int = 60,
+    polling_timeout: int = 900,  # Total timeout for polling loop (15 minutes default)
+    missing_result_max_retries: int = 3,  # Max retries when results go missing (backend restart)
 ) -> list[dict]:
     code = get_full_code(lang, solution, test_runner) if test_runner else solution
     sandbox_lang = get_sandbox_lang(lang)
@@ -121,14 +123,44 @@ def run_tests(
             all_results = [None] * len(test_cases)
             pending_ids = set(sids)
 
+            polling_start_time = time.time()
+            consecutive_missing_count = 0
+
             while len(pending_ids):
+                # Check for polling timeout
+                elapsed = time.time() - polling_start_time
+                if elapsed > polling_timeout:
+                    raise BackendUnavailableError(
+                        f"Polling timeout after {elapsed:.1f}s. {len(pending_ids)} submissions still pending."
+                    )
+
                 time.sleep(polling_interval)
 
                 batch_results = get_batch_results(list(pending_ids), backend_base_url=backend_base_url)
+
+                # Detect missing submissions (backend may have restarted)
+                returned_sids = {r["submission_id"] for r in batch_results}
+                missing_sids = pending_ids - returned_sids
+                if missing_sids:
+                    consecutive_missing_count += 1
+                    logging.warning(
+                        f"Backend returned {len(batch_results)} results but {len(missing_sids)} submissions missing "
+                        f"(attempt {consecutive_missing_count}/{missing_result_max_retries}). "
+                        f"Missing IDs: {sorted(missing_sids)[:5]}{'...' if len(missing_sids) > 5 else ''}"
+                    )
+                    if consecutive_missing_count >= missing_result_max_retries:
+                        raise BackendUnavailableError(
+                            f"Submissions lost after {missing_result_max_retries} retries. "
+                            f"Backend may have restarted. Missing {len(missing_sids)} submissions."
+                        )
+                else:
+                    consecutive_missing_count = 0
+
                 new_result_ids = set()
                 for result_data in batch_results:
                     sid = result_data["submission_id"]
-                    assert sid in pending_ids, f"Submission ID {sid} not in pending IDs"
+                    if sid not in pending_ids:
+                        continue
 
                     if result_data["status"] not in ("waiting", "processing"):
                         all_results[sid_to_tid[sid]] = {
@@ -141,7 +173,7 @@ def run_tests(
 
                 try:
                     raise_error(new_results, code)
-                except Exception as e:
+                except Exception:
                     if raise_on_error or early_stop:
                         if pending_ids:
                             with ThreadPoolExecutor(max_workers=len(pending_ids)) as cancel_executor:
