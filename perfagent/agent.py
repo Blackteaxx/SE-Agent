@@ -387,6 +387,10 @@ class PerfAgent:
         if not passed:
             return single_run_summary
 
+        # 若重复运行次数为 1，直接返回单次运行的结果，无需进行级联评估
+        if self.config.runtime.num_runs == 1:
+            return single_run_summary
+
         # 所有测试用例通过，进行正式的多次性能评估
         try:
             result = run_performance_benchmark(
