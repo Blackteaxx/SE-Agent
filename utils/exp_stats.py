@@ -91,6 +91,7 @@ def analyze_se_framework_log(log_path: Path) -> dict:
         lines = content.split(b"\n")
         start_time = None
         end_time = None
+        end_time_marker = None
 
         # 找第一个有效时间戳
         for line in lines:
@@ -99,6 +100,19 @@ def analyze_se_framework_log(log_path: Path) -> dict:
                 start_time = parse_log_timestamp(match.group(1))
                 break
 
+        # 找到首次出现“生成最终结果 final.json”所在行的时间戳作为结束时间
+        for line in lines:
+            if b"final.json" in line:
+                try:
+                    text = line.decode("utf-8", errors="ignore")
+                    if "生成最终结果 final.json" in text:
+                        m = RE_LOG_TIMESTAMP.match(line)
+                        if m:
+                            end_time_marker = parse_log_timestamp(m.group(1))
+                            break
+                except Exception:
+                    continue
+
         # 找最后一个有效时间戳
         for line in reversed(lines):
             match = RE_LOG_TIMESTAMP.match(line)
@@ -106,8 +120,10 @@ def analyze_se_framework_log(log_path: Path) -> dict:
                 end_time = parse_log_timestamp(match.group(1))
                 break
 
-        if start_time and end_time:
-            stats["total_run_time"] = (end_time - start_time).total_seconds()
+        if start_time:
+            chosen_end = end_time_marker or end_time
+            if chosen_end:
+                stats["total_run_time"] = (chosen_end - start_time).total_seconds()
 
     except Exception as e:
         print(f"Warning: 无法分析 {log_path}: {e}", file=sys.stderr)
