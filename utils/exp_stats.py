@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-任务性能分析脚本
+实验统计分析脚本 (exp_stats.py)
 
-分析 SE_Perf 运行的任务性能，包括：
-1. LLM 达到最大重试次数 (attempt=10/10) 的统计
-2. 每个任务的评估耗时统计
+分析 SE_Perf 实验运行统计，包括：
+1. 每个任务的总运行时间
+2. LLM 调用次数和重试统计
+3. 评估耗时统计
 
 用法:
-    python utils/analyze_task_performance.py <trajectory_dir> [--compare <other_dir>]
+    python utils/exp_stats.py <trajectory_dir> [--compare <other_dir>]
     
 示例:
-    python utils/analyze_task_performance.py trajectories_perf/deepseek-v3/Plan-Random-Local-Global-45its_20251218_160428
+    python utils/exp_stats.py trajectories_perf/deepseek-v3/Plan-Random-Local-Global-45its_20251218_160428
     
     # 对比两个目录
-    python utils/analyze_task_performance.py trajectories_perf/deepseek-v3/Plan-Random-Local-Global-45its_20251218_160428 \
+    python utils/exp_stats.py trajectories_perf/deepseek-v3/Plan-Random-Local-Global-45its_20251218_160428 \
         --compare trajectories_perf/deepseek-v3/Plan-Weighted-45its_20251218_153854
 """
 
@@ -23,6 +24,7 @@ import os
 import re
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
@@ -32,12 +34,16 @@ RE_LIMITING = re.compile(rb"5513-chatGPt\.limiting")
 RE_LLM_CALL = re.compile(r"调用LLM:".encode())
 # 只匹配 step_2 的评估时间（step_1 是初始化，耗时 0.00s）
 RE_EVAL_TIME = re.compile(rb"step_2.*\xe8\x80\x97\xe6\x97\xb6 ([\d.]+)s")  # "step_2...耗时 XXXs"
+# 提取日志时间戳: "2025-12-18 16:04:38,703"
+RE_LOG_TIMESTAMP = re.compile(rb"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})")
 
 
 class TaskStats(NamedTuple):
     """任务统计结果"""
 
     task_name: str
+    # 任务运行时间
+    total_run_time: float  # 总运行时间 (秒)
     # LLM 重试相关
     max_retry_count: int  # attempt=10/10 的次数
     total_limiting_count: int  # 限流次数
@@ -50,12 +56,22 @@ class TaskStats(NamedTuple):
     min_eval_time: float  # 最小评估时间 (秒)
 
 
+def parse_log_timestamp(ts_bytes: bytes) -> datetime | None:
+    """解析日志时间戳"""
+    try:
+        ts_str = ts_bytes.decode("utf-8")
+        return datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S,%f")
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
 def analyze_se_framework_log(log_path: Path) -> dict:
     """分析 se_framework.log 文件（使用二进制模式 + 预编译正则，更快）"""
     stats = {
         "max_retry_count": 0,
         "total_limiting_count": 0,
         "total_llm_calls": 0,
+        "total_run_time": 0.0,
     }
 
     if not log_path.exists():
@@ -70,6 +86,28 @@ def analyze_se_framework_log(log_path: Path) -> dict:
         stats["max_retry_count"] = len(RE_MAX_RETRY.findall(content))
         stats["total_limiting_count"] = len(RE_LIMITING.findall(content))
         stats["total_llm_calls"] = len(RE_LLM_CALL.findall(content))
+
+        # 提取开始和结束时间，计算总运行时间
+        lines = content.split(b"\n")
+        start_time = None
+        end_time = None
+
+        # 找第一个有效时间戳
+        for line in lines:
+            match = RE_LOG_TIMESTAMP.match(line)
+            if match:
+                start_time = parse_log_timestamp(match.group(1))
+                break
+
+        # 找最后一个有效时间戳
+        for line in reversed(lines):
+            match = RE_LOG_TIMESTAMP.match(line)
+            if match:
+                end_time = parse_log_timestamp(match.group(1))
+                break
+
+        if start_time and end_time:
+            stats["total_run_time"] = (end_time - start_time).total_seconds()
 
     except Exception as e:
         print(f"Warning: 无法分析 {log_path}: {e}", file=sys.stderr)
@@ -137,6 +175,7 @@ def analyze_single_task(task_dir: Path) -> TaskStats:
 
     return TaskStats(
         task_name=task_name,
+        total_run_time=se_stats["total_run_time"],
         max_retry_count=se_stats["max_retry_count"],
         total_limiting_count=se_stats["total_limiting_count"],
         total_llm_calls=se_stats["total_llm_calls"],
@@ -186,11 +225,31 @@ def analyze_directory(traj_dir: Path, max_workers: int | None = None) -> list[Ta
     return results
 
 
+def format_duration(seconds: float) -> str:
+    """格式化时间，显示为 小时:分钟:秒"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds % 60
+    if hours > 0:
+        return f"{hours}h {minutes}m {secs:.0f}s"
+    elif minutes > 0:
+        return f"{minutes}m {secs:.0f}s"
+    else:
+        return f"{secs:.1f}s"
+
+
 def print_stats(results: list[TaskStats], title: str):
     """打印统计结果"""
     print(f"\n{'=' * 80}")
     print(f"  {title}")
     print(f"{'=' * 80}")
+
+    # 运行时间统计
+    run_times = [r.total_run_time for r in results if r.total_run_time > 0]
+    total_run_time = sum(run_times)
+    avg_run_time = total_run_time / len(run_times) if run_times else 0
+    max_run_time = max(run_times) if run_times else 0
+    min_run_time = min(run_times) if run_times else 0
 
     # 总体统计
     total_max_retry = sum(r.max_retry_count for r in results)
@@ -200,10 +259,19 @@ def print_stats(results: list[TaskStats], title: str):
 
     print("\n📊 总体统计:")
     print(f"  - 任务总数: {len(results)}")
+    print(f"  - 总运行时间: {format_duration(total_run_time)} (平均: {format_duration(avg_run_time)})")
+    print(f"  - 运行时间范围: {format_duration(min_run_time)} ~ {format_duration(max_run_time)}")
     print(f"  - 有最大重试的任务数: {tasks_with_retry}")
     print(f"  - 总达到最大重试次数 (attempt=10/10): {total_max_retry}")
     print(f"  - 总限流次数: {total_limiting}")
     print(f"  - 总 LLM 调用次数: {total_llm_calls}")
+
+    # 运行时间 TOP 20
+    print("\n🕐 运行时间 TOP 20:")
+    sorted_by_runtime = sorted(results, key=lambda x: x.total_run_time, reverse=True)[:20]
+    for r in sorted_by_runtime:
+        if r.total_run_time > 0:
+            print(f"  {r.task_name}: {format_duration(r.total_run_time)}")
 
     # LLM 最大重试 TOP 20
     print("\n🔴 LLM 达到最大重试次数 TOP 20 (attempt=10/10):")
@@ -284,6 +352,7 @@ def export_json(results: list[TaskStats], output_path: Path):
         data.append(
             {
                 "task_name": r.task_name,
+                "total_run_time": r.total_run_time,
                 "max_retry_count": r.max_retry_count,
                 "total_limiting_count": r.total_limiting_count,
                 "total_llm_calls": r.total_llm_calls,
@@ -303,7 +372,9 @@ def export_json(results: list[TaskStats], output_path: Path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="分析 SE_Perf 任务性能", formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__
+        description="分析 SE_Perf 实验统计（运行时间、LLM调用、评估耗时）",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
     )
     parser.add_argument("trajectory_dir", type=str, help="轨迹目录路径")
     parser.add_argument("--compare", type=str, help="对比目录路径")
