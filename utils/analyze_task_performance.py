@@ -19,10 +19,19 @@
 
 import argparse
 import json
+import os
 import re
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import NamedTuple
+
+# 预编译正则表达式 (全局，避免重复编译)
+RE_MAX_RETRY = re.compile(rb"attempt=10/10")
+RE_LIMITING = re.compile(rb"5513-chatGPt\.limiting")
+RE_LLM_CALL = re.compile(r"调用LLM:".encode())
+# 只匹配 step_2 的评估时间（step_1 是初始化，耗时 0.00s）
+RE_EVAL_TIME = re.compile(rb"step_2.*\xe8\x80\x97\xe6\x97\xb6 ([\d.]+)s")  # "step_2...耗时 XXXs"
 
 
 class TaskStats(NamedTuple):
@@ -42,7 +51,7 @@ class TaskStats(NamedTuple):
 
 
 def analyze_se_framework_log(log_path: Path) -> dict:
-    """分析 se_framework.log 文件"""
+    """分析 se_framework.log 文件（使用二进制模式 + 预编译正则，更快）"""
     stats = {
         "max_retry_count": 0,
         "total_limiting_count": 0,
@@ -53,17 +62,14 @@ def analyze_se_framework_log(log_path: Path) -> dict:
         return stats
 
     try:
-        with open(log_path, encoding="utf-8", errors="ignore") as f:
+        # 使用二进制模式读取，避免编码转换开销
+        with open(log_path, "rb") as f:
             content = f.read()
 
-        # 统计 attempt=10/10 (达到最大重试)
-        stats["max_retry_count"] = len(re.findall(r"attempt=10/10", content))
-
-        # 统计限流次数
-        stats["total_limiting_count"] = len(re.findall(r"5513-chatGPt\.limiting", content))
-
-        # 统计 LLM 调用次数
-        stats["total_llm_calls"] = len(re.findall(r"调用LLM:", content))
+        # 使用预编译的正则表达式
+        stats["max_retry_count"] = len(RE_MAX_RETRY.findall(content))
+        stats["total_limiting_count"] = len(RE_LIMITING.findall(content))
+        stats["total_llm_calls"] = len(RE_LLM_CALL.findall(content))
 
     except Exception as e:
         print(f"Warning: 无法分析 {log_path}: {e}", file=sys.stderr)
@@ -72,7 +78,7 @@ def analyze_se_framework_log(log_path: Path) -> dict:
 
 
 def analyze_perfagent_logs(task_dir: Path) -> dict:
-    """分析 perfagent.log 文件获取评估耗时"""
+    """分析 perfagent.log 文件获取评估耗时（使用二进制模式 + 预编译正则，更快）"""
     stats = {
         "eval_count": 0,
         "total_eval_time": 0.0,
@@ -88,14 +94,15 @@ def analyze_perfagent_logs(task_dir: Path) -> dict:
         inner_perfagent = iteration_dir / task_name / "perfagent.log"
         if inner_perfagent.exists():
             try:
-                with open(inner_perfagent, encoding="utf-8", errors="ignore") as f:
+                # 使用二进制模式读取
+                with open(inner_perfagent, "rb") as f:
                     content = f.read()
 
-                # 提取 "耗时 XXXs" 格式的时间
-                times = re.findall(r"耗时 ([\d.]+)s", content)
+                # 使用预编译的正则表达式提取 step_2 的评估时间（跳过 step_1 初始化）
+                times = RE_EVAL_TIME.findall(content)
                 for t in times:
                     try:
-                        time_val = float(t)
+                        time_val = float(t.decode("utf-8"))
                         stats["eval_times"].append(time_val)
                         stats["eval_count"] += 1
                         stats["total_eval_time"] += time_val
@@ -112,8 +119,37 @@ def analyze_perfagent_logs(task_dir: Path) -> dict:
     return stats
 
 
-def analyze_directory(traj_dir: Path) -> list[TaskStats]:
-    """分析整个轨迹目录"""
+def analyze_single_task(task_dir: Path) -> TaskStats:
+    """分析单个任务目录（供多进程调用）"""
+    task_name = task_dir.name
+
+    # 分析 se_framework.log
+    se_log = task_dir / "se_framework.log"
+    se_stats = analyze_se_framework_log(se_log)
+
+    # 分析 perfagent.log
+    eval_stats = analyze_perfagent_logs(task_dir)
+
+    # 计算平均值
+    avg_eval_time = 0.0
+    if eval_stats["eval_count"] > 0:
+        avg_eval_time = eval_stats["total_eval_time"] / eval_stats["eval_count"]
+
+    return TaskStats(
+        task_name=task_name,
+        max_retry_count=se_stats["max_retry_count"],
+        total_limiting_count=se_stats["total_limiting_count"],
+        total_llm_calls=se_stats["total_llm_calls"],
+        eval_count=eval_stats["eval_count"],
+        total_eval_time=eval_stats["total_eval_time"],
+        avg_eval_time=avg_eval_time,
+        max_eval_time=eval_stats["max_eval_time"],
+        min_eval_time=eval_stats["min_eval_time"],
+    )
+
+
+def analyze_directory(traj_dir: Path, max_workers: int | None = None) -> list[TaskStats]:
+    """分析整个轨迹目录（使用多进程并行加速）"""
     results = []
 
     if not traj_dir.exists():
@@ -123,34 +159,29 @@ def analyze_directory(traj_dir: Path) -> list[TaskStats]:
     # 遍历所有任务目录
     task_dirs = [d for d in traj_dir.iterdir() if d.is_dir() and not d.name.startswith(".")]
 
-    for task_dir in sorted(task_dirs):
-        task_name = task_dir.name
+    if not task_dirs:
+        return results
 
-        # 分析 se_framework.log
-        se_log = task_dir / "se_framework.log"
-        se_stats = analyze_se_framework_log(se_log)
+    # 默认使用 CPU 核心数
+    if max_workers is None:
+        max_workers = min(os.cpu_count() or 4, len(task_dirs))
 
-        # 分析 perfagent.log
-        eval_stats = analyze_perfagent_logs(task_dir)
+    print(f"  使用 {max_workers} 个进程并行分析 {len(task_dirs)} 个任务...")
 
-        # 计算平均值
-        avg_eval_time = 0.0
-        if eval_stats["eval_count"] > 0:
-            avg_eval_time = eval_stats["total_eval_time"] / eval_stats["eval_count"]
+    # 使用多进程并行处理
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(analyze_single_task, task_dir): task_dir for task_dir in task_dirs}
 
-        results.append(
-            TaskStats(
-                task_name=task_name,
-                max_retry_count=se_stats["max_retry_count"],
-                total_limiting_count=se_stats["total_limiting_count"],
-                total_llm_calls=se_stats["total_llm_calls"],
-                eval_count=eval_stats["eval_count"],
-                total_eval_time=eval_stats["total_eval_time"],
-                avg_eval_time=avg_eval_time,
-                max_eval_time=eval_stats["max_eval_time"],
-                min_eval_time=eval_stats["min_eval_time"],
-            )
-        )
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+                results.append(result)
+            except Exception as e:
+                task_dir = futures[future]
+                print(f"Warning: 分析任务 {task_dir.name} 失败: {e}", file=sys.stderr)
+
+    # 按任务名排序
+    results.sort(key=lambda x: x.task_name)
 
     return results
 
@@ -277,13 +308,14 @@ def main():
     parser.add_argument("trajectory_dir", type=str, help="轨迹目录路径")
     parser.add_argument("--compare", type=str, help="对比目录路径")
     parser.add_argument("--output", "-o", type=str, help="输出 JSON 文件路径")
+    parser.add_argument("--workers", "-w", type=int, default=None, help="并行进程数 (默认: CPU核心数)")
 
     args = parser.parse_args()
 
     traj_dir = Path(args.trajectory_dir)
 
     print(f"正在分析: {traj_dir}")
-    results = analyze_directory(traj_dir)
+    results = analyze_directory(traj_dir, max_workers=args.workers)
 
     if not results:
         print("未找到任何任务数据")
@@ -295,7 +327,7 @@ def main():
     if args.compare:
         compare_dir = Path(args.compare)
         print(f"\n正在分析对比目录: {compare_dir}")
-        compare_results = analyze_directory(compare_dir)
+        compare_results = analyze_directory(compare_dir, max_workers=args.workers)
         if compare_results:
             compare_title = compare_dir.name
             print_stats(compare_results, compare_title)
