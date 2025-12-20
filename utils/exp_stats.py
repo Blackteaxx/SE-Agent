@@ -36,6 +36,21 @@ RE_LLM_CALL = re.compile(r"调用LLM:".encode())
 RE_EVAL_TIME = re.compile(rb"step_2.*\xe8\x80\x97\xe6\x97\xb6 ([\d.]+)s")  # "step_2...耗时 XXXs"
 # 提取日志时间戳: "2025-12-18 16:04:38,703"
 RE_LOG_TIMESTAMP = re.compile(rb"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})")
+# 匹配"开始评估优化后的代码性能"行（用于计算真实评估时间）
+RE_EVAL_START = re.compile(
+    rb"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}).*\xe5\xbc\x80\xe5\xa7\x8b\xe8\xaf\x84\xe4\xbc\xb0\xe4\xbc\x98\xe5\x8c\x96\xe5\x90\x8e\xe7\x9a\x84\xe4\xbb\xa3\xe7\xa0\x81\xe6\x80\xa7\xe8\x83\xbd"
+)  # "开始评估优化后的代码性能"
+# 匹配"步骤 step_2 完成"行
+RE_STEP2_END = re.compile(
+    rb"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}).*step_2.*\xe5\xae\x8c\xe6\x88\x90"
+)  # "步骤 step_2 完成"
+
+
+class EvalDetail(NamedTuple):
+    """单次评估的详细信息"""
+
+    iteration: int  # 迭代号
+    eval_time: float  # 真实评估时间（秒）
 
 
 class TaskStats(NamedTuple):
@@ -54,6 +69,9 @@ class TaskStats(NamedTuple):
     avg_eval_time: float  # 平均评估时间 (秒)
     max_eval_time: float  # 最大评估时间 (秒)
     min_eval_time: float  # 最小评估时间 (秒)
+    # 异常评估详情（包含迭代号）
+    max_eval_detail: EvalDetail | None  # 最大评估时间的详情
+    eval_details: tuple[EvalDetail, ...]  # 所有评估详情
 
 
 def parse_log_timestamp(ts_bytes: bytes) -> datetime | None:
@@ -132,13 +150,15 @@ def analyze_se_framework_log(log_path: Path) -> dict:
 
 
 def analyze_perfagent_logs(task_dir: Path) -> dict:
-    """分析 perfagent.log 文件获取评估耗时（使用二进制模式 + 预编译正则，更快）"""
+    """分析 perfagent.log 文件获取评估耗时（计算真实评估时间：从"开始评估"到"step_2完成"）"""
     stats = {
         "eval_count": 0,
         "total_eval_time": 0.0,
         "max_eval_time": 0.0,
         "min_eval_time": float("inf"),
         "eval_times": [],
+        "eval_details": [],  # 存储 EvalDetail
+        "max_eval_detail": None,
     }
 
     task_name = task_dir.name
@@ -148,22 +168,38 @@ def analyze_perfagent_logs(task_dir: Path) -> dict:
         inner_perfagent = iteration_dir / task_name / "perfagent.log"
         if inner_perfagent.exists():
             try:
+                # 提取迭代号
+                iter_name = iteration_dir.name
+                iteration_num = int(iter_name.split("_")[1]) if "_" in iter_name else 0
+
                 # 使用二进制模式读取
                 with open(inner_perfagent, "rb") as f:
                     content = f.read()
 
-                # 使用预编译的正则表达式提取 step_2 的评估时间（跳过 step_1 初始化）
-                times = RE_EVAL_TIME.findall(content)
-                for t in times:
-                    try:
-                        time_val = float(t.decode("utf-8"))
-                        stats["eval_times"].append(time_val)
-                        stats["eval_count"] += 1
-                        stats["total_eval_time"] += time_val
-                        stats["max_eval_time"] = max(stats["max_eval_time"], time_val)
-                        stats["min_eval_time"] = min(stats["min_eval_time"], time_val)
-                    except ValueError:
-                        pass
+                # 查找"开始评估优化后的代码性能"的时间戳
+                eval_start_match = RE_EVAL_START.search(content)
+                # 查找"步骤 step_2 完成"的时间戳
+                step2_end_match = RE_STEP2_END.search(content)
+
+                if eval_start_match and step2_end_match:
+                    # 计算真实评估时间
+                    start_ts = parse_log_timestamp(eval_start_match.group(1))
+                    end_ts = parse_log_timestamp(step2_end_match.group(1))
+
+                    if start_ts and end_ts:
+                        time_val = (end_ts - start_ts).total_seconds()
+                        if time_val >= 0:  # 确保时间差为正
+                            detail = EvalDetail(iteration=iteration_num, eval_time=time_val)
+                            stats["eval_times"].append(time_val)
+                            stats["eval_details"].append(detail)
+                            stats["eval_count"] += 1
+                            stats["total_eval_time"] += time_val
+
+                            if time_val > stats["max_eval_time"]:
+                                stats["max_eval_time"] = time_val
+                                stats["max_eval_detail"] = detail
+
+                            stats["min_eval_time"] = min(stats["min_eval_time"], time_val)
             except Exception:
                 pass
 
@@ -200,6 +236,8 @@ def analyze_single_task(task_dir: Path) -> TaskStats:
         avg_eval_time=avg_eval_time,
         max_eval_time=eval_stats["max_eval_time"],
         min_eval_time=eval_stats["min_eval_time"],
+        max_eval_detail=eval_stats["max_eval_detail"],
+        eval_details=tuple(eval_stats["eval_details"]),
     )
 
 
@@ -304,11 +342,12 @@ def print_stats(results: list[TaskStats], title: str):
             print(f"  {r.task_name}: 次数={r.eval_count}, 平均={r.avg_eval_time:.1f}s, 最大={r.max_eval_time:.1f}s")
 
     # 异常情况 (最大评估时间 > 300s)
-    print("\n⚠️  异常评估耗时 (单次 > 300s):")
+    print("\n⚠️  异常评估耗时 (单次 > 300s，真实评测时间):")
     sorted_by_max = sorted(results, key=lambda x: x.max_eval_time, reverse=True)
     for r in sorted_by_max:
         if r.max_eval_time > 300:
-            print(f"  {r.task_name}: 最大={r.max_eval_time:.1f}s ({r.max_eval_time / 60:.1f}分钟)")
+            iter_info = f"iter_{r.max_eval_detail.iteration}" if r.max_eval_detail else "?"
+            print(f"  {r.task_name} [{iter_info}]: 最大={r.max_eval_time:.1f}s ({r.max_eval_time / 60:.1f}分钟)")
 
 
 def compare_stats(results1: list[TaskStats], results2: list[TaskStats], title1: str, title2: str):
