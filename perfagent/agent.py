@@ -7,7 +7,10 @@ PerfAgent 核心类
 import json
 import logging
 import re
+import time
+import traceback
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -349,19 +352,30 @@ class PerfAgent:
         self, language: str, code: str, test_cases: list[dict], instance: EffiBenchXInstance
     ) -> dict[str, Any]:
         """评估代码性能，保持参数兼容"""
+        eval_start_time = time.time()
+        self.logger.info(
+            f"[性能评估开始] 时间: {datetime.now().strftime('%H:%M:%S')}, "
+            f"测试用例数: {len(test_cases)}, 代码长度: {len(code)} 字符"
+        )
 
         # 如果代码与占位符代码相同，返回默认失败结构
         if code == self._get_default_placeholder(language):
+            self.logger.info("[性能评估跳过] 代码为占位符，返回默认失败结构")
             return self._create_default_performance_result(consistent=True)
 
         # 若 evaluator 或测试用例缺失/格式不合法，直接返回默认结构以避免长时间的后端调用
         evaluator = getattr(instance, "evaluator", None)
         tc_valid = bool(test_cases) and isinstance(test_cases, list) and isinstance(test_cases[0], dict)
         if not evaluator or not tc_valid:
+            self.logger.warning(
+                f"[性能评估跳过] 缺少必要组件 - evaluator: {bool(evaluator)}, test_cases有效: {tc_valid}"
+            )
             return self._create_default_performance_result(consistent=True)
         test_runner = self._resolve_test_runner(instance, language)
 
         # 级联评估：先用 benchmark 进行一次运行（num_runs=1），若未全部通过则直接返回
+        single_run_start = time.time()
+        self.logger.info("[单次预运行开始] 验证代码正确性...")
         try:
             single_run_summary = run_performance_benchmark(
                 lang=language,
@@ -375,9 +389,15 @@ class PerfAgent:
                 trim_ratio=self.config.runtime.trim_ratio,
                 max_workers=self.config.runtime.max_workers,
             )
+            single_run_elapsed = time.time() - single_run_start
+            pass_rate = single_run_summary.get("performance_analysis", {}).get("pass_rate", 0)
+            self.logger.info(f"[单次预运行完成] 耗时: {single_run_elapsed:.2f}s, 通过率: {pass_rate:.2%}")
         except Exception as e:
-            # 单次运行失败则回退到默认失败结构，保持与现有测试兼容
-            self.logger.warning(f"单次运行评估失败，返回默认性能结构: {e}")
+            single_run_elapsed = time.time() - single_run_start
+            self.logger.warning(
+                f"[单次预运行失败] 耗时: {single_run_elapsed:.2f}s, 错误类型: {type(e).__name__}, "
+                f"错误信息: {e}\n{traceback.format_exc()}"
+            )
             return self._create_default_performance_result(consistent=True)
 
         # 计算单次运行通过率（优先使用返回的 pass_rates）
@@ -385,13 +405,30 @@ class PerfAgent:
 
         # 若未全部通过，直接返回单次运行的结果（不进行多次性能评估）
         if not passed:
+            total_elapsed = time.time() - eval_start_time
+            failed_count = len(single_run_summary.get("failed_test_details", []))
+            self.logger.info(
+                f"[性能评估提前结束] 代码未全部通过测试，失败用例数: {failed_count}, 总耗时: {total_elapsed:.2f}s"
+            )
             return single_run_summary
 
         # 若重复运行次数为 1，直接返回单次运行的结果，无需进行级联评估
         if self.config.runtime.num_runs == 1:
+            total_elapsed = time.time() - eval_start_time
+            perf_analysis = single_run_summary.get("performance_analysis", {})
+            self.logger.info(
+                f"[性能评估完成] 单次运行模式, 总耗时: {total_elapsed:.2f}s, "
+                f"runtime: {perf_analysis.get('runtime', 'N/A')}s, "
+                f"memory: {perf_analysis.get('memory', 'N/A')}MB"
+            )
             return single_run_summary
 
         # 所有测试用例通过，进行正式的多次性能评估
+        multi_run_start = time.time()
+        self.logger.info(
+            f"[多次评估开始] 运行次数: {self.config.runtime.num_runs}, "
+            f"time_limit: {self.config.runtime.time_limit}s, memory_limit: {self.config.runtime.memory_limit}MB"
+        )
         try:
             result = run_performance_benchmark(
                 lang=language,
@@ -405,9 +442,24 @@ class PerfAgent:
                 trim_ratio=self.config.runtime.trim_ratio,
                 max_workers=self.config.runtime.max_workers,
             )
+            multi_run_elapsed = time.time() - multi_run_start
+            total_elapsed = time.time() - eval_start_time
+            perf_analysis = result.get("performance_analysis", {})
+            self.logger.info(
+                f"[多次评估完成] 多次运行耗时: {multi_run_elapsed:.2f}s, 总评估耗时: {total_elapsed:.2f}s\n"
+                f"  - runtime: {perf_analysis.get('runtime', 'N/A')}s (trimmed_mean)\n"
+                f"  - memory: {perf_analysis.get('memory', 'N/A')}MB (trimmed_mean)\n"
+                f"  - integral: {perf_analysis.get('integral', 'N/A')}MB*s\n"
+                f"  - pass_rate: {perf_analysis.get('pass_rate', 0):.2%}"
+            )
             return result
         except Exception as e:
-            self.logger.error(f"性能评估失败: {e}")
+            multi_run_elapsed = time.time() - multi_run_start
+            total_elapsed = time.time() - eval_start_time
+            self.logger.error(
+                f"[多次评估失败] 多次运行耗时: {multi_run_elapsed:.2f}s, 总耗时: {total_elapsed:.2f}s, "
+                f"错误类型: {type(e).__name__}, 错误信息: {e}\n{traceback.format_exc()}"
+            )
             return self._create_default_performance_result(consistent=False)
 
     def _extract_pass_rate(self, results: dict[str, Any]) -> float:
@@ -467,29 +519,70 @@ class PerfAgent:
 
     def run(self, instance: EffiBenchXInstance) -> dict[str, Any]:
         """运行性能优化流程（仅使用配置语言，实例为 dataclass）"""
+        run_start_time = time.time()
+        instance_id = getattr(instance, "task_name", None) or getattr(instance, "id", "unknown")
+
+        self.logger.info(
+            f"\n{'#' * 70}\n"
+            f"# [PerfAgent 运行开始]\n"
+            f"# 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"# 实例: {instance_id}\n"
+            f"# 最大迭代次数: {self.config.max_iterations}\n"
+            f"# 优化目标: {self.config.optimization.target}\n"
+            f"# 模型: {self.config.model.name}\n"
+            f"{'#' * 70}"
+        )
+
         try:
             # 1. 初始化上下文
+            init_start = time.time()
             ctx = self._init_run_context(instance)
-            self.logger.info(f"开始优化实例: {ctx.instance.id}")
+            init_elapsed = time.time() - init_start
+            self.logger.info(f"[上下文初始化完成] 耗时: {init_elapsed:.3f}s")
 
             # 2. 初始评估
             self._perform_initial_evaluation(ctx)
 
             # 3. 优化循环
+            loop_start = time.time()
             self._process_optimization_loop(ctx)
+            loop_elapsed = time.time() - loop_start
+            self.logger.info(f"[优化循环完成] 总耗时: {loop_elapsed:.2f}s ({loop_elapsed / 60:.1f}分钟)")
 
             # 4. 完成并生成结果
-            return self._finalize_run(ctx)
+            result = self._finalize_run(ctx)
+
+            run_elapsed = time.time() - run_start_time
+            self.logger.info(
+                f"\n{'#' * 70}\n"
+                f"# [PerfAgent 运行成功完成]\n"
+                f"# 实例: {instance_id}\n"
+                f"# 总耗时: {run_elapsed:.2f}s ({run_elapsed / 60:.1f}分钟)\n"
+                f"# 成功: {result.get('success', False)}\n"
+                f"{'#' * 70}"
+            )
+            return result
 
         except Exception as e:
-            self.logger.error(f"优化过程失败: {e}")
+            run_elapsed = time.time() - run_start_time
+            self.logger.error(
+                f"\n{'!' * 70}\n"
+                f"! [PerfAgent 运行失败]\n"
+                f"! 实例: {instance_id}\n"
+                f"! 运行耗时: {run_elapsed:.2f}s ({run_elapsed / 60:.1f}分钟)\n"
+                f"! 错误类型: {type(e).__name__}\n"
+                f"! 错误信息: {e}\n"
+                f"! 堆栈跟踪:\n{traceback.format_exc()}\n"
+                f"{'!' * 70}"
+            )
             # 尝试记录错误轨迹
             try:
                 # 如果 ctx 存在，尝试用它来结束轨迹
                 if "ctx" in locals():
                     ctx.trajectory.finalize(success=False, error_message=str(e), final_submission_code=ctx.best_code)
-            except Exception:
-                pass
+                    self.logger.info("[轨迹已保存] 错误轨迹记录完成")
+            except Exception as traj_error:
+                self.logger.warning(f"[轨迹保存失败] {type(traj_error).__name__}: {traj_error}")
             raise
 
     def _init_run_context(self, instance: EffiBenchXInstance) -> RunContext:
@@ -550,6 +643,19 @@ class PerfAgent:
 
     def _perform_initial_evaluation(self, ctx: RunContext):
         """执行初始性能评估"""
+        init_eval_start = time.time()
+        self.logger.info(
+            f"\n{'=' * 60}\n"
+            f"[初始评估开始] 时间: {datetime.now().strftime('%H:%M:%S')}\n"
+            f"  - 实例ID: {ctx.instance.id}\n"
+            f"  - 语言: {ctx.language}\n"
+            f"  - 优化目标: {ctx.optimization_target}\n"
+            f"  - 初始代码来源: {self._initial_code_source}\n"
+            f"  - 初始代码长度: {len(ctx.current_code)} 字符\n"
+            f"  - 测试用例数: {len(ctx.test_cases)}\n"
+            f"{'=' * 60}"
+        )
+
         step_id = ctx.trajectory.start_step(
             "initial_evaluation", query="Evaluate the initial code performance.", code_snapshot=ctx.current_code
         )
@@ -590,26 +696,53 @@ class PerfAgent:
             ctx.best_performance = ctx.initial_performance_value
             ctx.best_code = ctx.current_code
 
+        init_eval_elapsed = time.time() - init_eval_start
+        perf_analysis = initial_performance.get("performance_analysis", {})
+        self.logger.info(
+            f"\n[初始评估完成] 时间: {datetime.now().strftime('%H:%M:%S')}, 总耗时: {init_eval_elapsed:.2f}s\n"
+            f"  📊 初始性能基线:\n"
+            f"      - pass_rate: {ctx.best_pass_rate:.2%}\n"
+            f"      - runtime: {perf_analysis.get('runtime', 'N/A')}s\n"
+            f"      - memory: {perf_analysis.get('memory', 'N/A')}MB\n"
+            f"      - integral: {perf_analysis.get('integral', 'N/A')}MB*s\n"
+            f"      - {ctx.optimization_target} (优化目标): {ctx.initial_performance_value}"
+        )
+
     def _process_optimization_loop(self, ctx: RunContext):
         """执行优化循环"""
         remaining_iterations = max(0, self.config.max_iterations - ctx.iter_offset)
 
+        self.logger.info(
+            f"\n[优化循环开始] 计划迭代次数: {remaining_iterations}, "
+            f"iter_offset: {ctx.iter_offset}, max_iterations: {self.config.max_iterations}"
+        )
+
         for iteration in range(remaining_iterations):
             current_iter_num = iteration + 1 + ctx.iter_offset
-            self.logger.info(f"开始第 {current_iter_num} 次迭代")
 
             should_stop = self._process_single_iteration(ctx, current_iter_num)
             if should_stop:
+                self.logger.info(f"[优化循环提前终止] 在第 {current_iter_num} 次迭代后停止")
                 break
+
+        self.logger.info(f"[优化循环结束] 共执行 {len(ctx.optimization_history)} 次迭代")
 
     def _process_single_iteration(self, ctx: RunContext, iteration_num: int) -> bool:
         """处理单次迭代。返回 True 表示应该停止循环。"""
+        iteration_start_time = time.time()
+        self.logger.info(
+            f"\n{'=' * 60}\n[迭代 {iteration_num} 开始] 时间: {datetime.now().strftime('%H:%M:%S')}\n{'=' * 60}"
+        )
+
         # 1. 生成优化建议
+        prompt_start = time.time()
         opt_prompt = self._build_optimization_prompt(
             current_program=ctx.current_code,
             language=ctx.language,
             benchmark_results=ctx.current_benchmark_results,
         )
+        prompt_elapsed = time.time() - prompt_start
+        self.logger.debug(f"[Prompt构建] 耗时: {prompt_elapsed:.3f}s, Prompt长度: {len(opt_prompt)} 字符")
 
         step_id = ctx.trajectory.start_step(
             "generate_optimization",
@@ -617,16 +750,24 @@ class PerfAgent:
             code_snapshot=ctx.current_code,
         )
 
-        # 2. 调用 LLM
+        # 2. 调用 LLM（这里会有详细的 LLM 日志）
+        llm_phase_start = time.time()
         optimization_response = self._call_llm_for_optimization(ctx, opt_prompt)
+        llm_phase_elapsed = time.time() - llm_phase_start
 
         # 3. 提取和应用代码变更
+        extract_start = time.time()
         diff_text = None
         optimized_code = None
 
         if self.config.optimization.code_generation_mode == "direct":
             optimized_code = self._extract_full_code_from_response(optimization_response)
             if not optimized_code:
+                extract_elapsed = time.time() - extract_start
+                self.logger.warning(
+                    f"[代码提取失败] 耗时: {extract_elapsed:.3f}s, 模式: direct, "
+                    f"响应长度: {len(optimization_response)} 字符"
+                )
                 self._handle_failed_code_extraction(
                     ctx, step_id, optimization_response, iteration_num, "无法从响应中提取有效的完整代码"
                 )
@@ -634,33 +775,62 @@ class PerfAgent:
         else:
             diff_text = self._extract_diff_from_response(optimization_response)
             if not diff_text:
+                extract_elapsed = time.time() - extract_start
+                self.logger.warning(
+                    f"[Diff提取失败] 耗时: {extract_elapsed:.3f}s, 响应中未找到有效的 SEARCH/REPLACE 块"
+                )
                 self._handle_failed_code_extraction(
                     ctx, step_id, optimization_response, iteration_num, "无法从响应中提取有效的 diff"
                 )
                 return False
 
+            # 应用 diff
+            diff_apply_start = time.time()
             try:
                 optimized_code = self.diff_applier.apply_diff(ctx.current_code, diff_text)
+                diff_apply_elapsed = time.time() - diff_apply_start
+                self.logger.info(f"[Diff应用成功] 耗时: {diff_apply_elapsed:.3f}s, diff长度: {len(diff_text)} 字符")
             except Exception as e:
+                diff_apply_elapsed = time.time() - diff_apply_start
+                self.logger.error(
+                    f"[Diff应用失败] 耗时: {diff_apply_elapsed:.3f}s, 错误类型: {type(e).__name__}, 错误信息: {e}"
+                )
                 self._handle_failed_diff_application(
                     ctx, step_id, optimization_response, diff_text, iteration_num, str(e)
                 )
                 return False
 
+        extract_elapsed = time.time() - extract_start
+
         # 4. 检查代码是否变化
-        self.logger.info(f"Diff apply result: changed={optimized_code != ctx.current_code}")
-        if optimized_code == ctx.current_code:
+        code_changed = optimized_code != ctx.current_code
+        code_diff_lines = abs(len(optimized_code.splitlines()) - len(ctx.current_code.splitlines()))
+        self.logger.info(
+            f"[代码变更检查] 代码已变更: {code_changed}, "
+            f"新代码长度: {len(optimized_code)} 字符, 行数变化: {code_diff_lines:+d}"
+        )
+
+        if not code_changed:
             self._handle_no_code_change(ctx, step_id, optimization_response, diff_text, iteration_num)
             ctx.no_improve_count += 1
+            iteration_elapsed = time.time() - iteration_start_time
+            self.logger.info(
+                f"[迭代 {iteration_num} 结束] 代码未变更, 跳过评估\n"
+                f"  - LLM调用耗时: {llm_phase_elapsed:.2f}s ({llm_phase_elapsed / 60:.1f}分钟)\n"
+                f"  - 代码提取耗时: {extract_elapsed:.3f}s\n"
+                f"  - 迭代总耗时: {iteration_elapsed:.2f}s ({iteration_elapsed / 60:.1f}分钟)\n"
+                f"  - 连续未改进次数: {ctx.no_improve_count}"
+            )
             if self.config.early_stop_no_improve and ctx.no_improve_count >= self.config.early_stop_no_improve:
-                self.logger.info(f"连续未改进达到阈值 {self.config.early_stop_no_improve}，提前停止。")
+                self.logger.info(f"[提前停止] 连续未改进达到阈值 {self.config.early_stop_no_improve}")
                 return True
             return False
 
-        # 5. 评估新代码
+        # 5. 评估新代码（这里会有详细的评测日志）
+        eval_phase_start = time.time()
         try:
-            self.logger.info("开始评估优化后的代码性能")
             performance_result = self._evaluate_performance(ctx.language, optimized_code, ctx.test_cases, ctx.instance)
+            eval_phase_elapsed = time.time() - eval_phase_start
 
             # 更新上下文状态
             improved = self._update_run_context_after_eval(
@@ -684,11 +854,43 @@ class PerfAgent:
             else:
                 ctx.no_improve_count += 1
 
+            # 输出迭代总结
+            iteration_elapsed = time.time() - iteration_start_time
+            perf_analysis = performance_result.get("performance_analysis", {})
+            self.logger.info(
+                f"\n[迭代 {iteration_num} 完成] 时间: {datetime.now().strftime('%H:%M:%S')}\n"
+                f"  ⏱️  时间分解:\n"
+                f"      - LLM调用耗时: {llm_phase_elapsed:.2f}s ({llm_phase_elapsed / 60:.1f}分钟) "
+                f"({llm_phase_elapsed / iteration_elapsed * 100:.1f}%)\n"
+                f"      - 代码提取/应用耗时: {extract_elapsed:.3f}s\n"
+                f"      - 性能评估耗时: {eval_phase_elapsed:.2f}s ({eval_phase_elapsed / 60:.1f}分钟) "
+                f"({eval_phase_elapsed / iteration_elapsed * 100:.1f}%)\n"
+                f"      - 迭代总耗时: {iteration_elapsed:.2f}s ({iteration_elapsed / 60:.1f}分钟)\n"
+                f"  📊 性能指标:\n"
+                f"      - pass_rate: {perf_analysis.get('pass_rate', 0):.2%}\n"
+                f"      - runtime: {perf_analysis.get('runtime', 'N/A')}s\n"
+                f"      - memory: {perf_analysis.get('memory', 'N/A')}MB\n"
+                f"      - integral: {perf_analysis.get('integral', 'N/A')}MB*s\n"
+                f"  ✅ 结果: {'性能改进，已采纳' if improved else '未改进'}\n"
+                f"  📈 连续未改进次数: {ctx.no_improve_count}"
+            )
+
             if self.config.early_stop_no_improve and ctx.no_improve_count >= self.config.early_stop_no_improve:
-                self.logger.info(f"连续未改进达到阈值 {self.config.early_stop_no_improve}，提前停止。")
+                self.logger.info(f"[提前停止] 连续未改进达到阈值 {self.config.early_stop_no_improve}")
                 return True
 
         except Exception as e:
+            eval_phase_elapsed = time.time() - eval_phase_start
+            iteration_elapsed = time.time() - iteration_start_time
+            self.logger.error(
+                f"[迭代 {iteration_num} 异常] 评估阶段出错\n"
+                f"  - 错误类型: {type(e).__name__}\n"
+                f"  - 错误信息: {e}\n"
+                f"  - LLM调用耗时: {llm_phase_elapsed:.2f}s\n"
+                f"  - 评估耗时(至异常): {eval_phase_elapsed:.2f}s\n"
+                f"  - 迭代总耗时: {iteration_elapsed:.2f}s\n"
+                f"  - 堆栈跟踪:\n{traceback.format_exc()}"
+            )
             self._handle_evaluation_error(ctx, step_id, optimization_response, diff_text, iteration_num, str(e))
 
         return False
@@ -705,19 +907,44 @@ class PerfAgent:
         messages = self._build_messages(system_prompt, ctx.trajectory.history, opt_prompt)
 
         if self.llm_client:
+            llm_start_time = time.time()
+            self.logger.info(
+                f"[LLM调用开始] 时间: {datetime.now().strftime('%H:%M:%S')}, 模型: {self.config.model.name}"
+            )
             try:
-                return self.llm_client.call_llm(
+                response = self.llm_client.call_llm(
                     messages,
                     temperature=self.config.model.temperature,
                     max_tokens=self.config.model.max_output_tokens,
                     usage_context="perfagent.optimize",
                 )
+                llm_elapsed = time.time() - llm_start_time
+                self.logger.info(
+                    f"[LLM调用完成] 耗时: {llm_elapsed:.2f}s ({llm_elapsed / 60:.1f}分钟), "
+                    f"响应长度: {len(response)} 字符"
+                )
+                return response
             except TypeError:
-                return self.llm_client.call_llm(
+                # 兼容旧版 API（不支持 usage_context 参数）
+                response = self.llm_client.call_llm(
                     messages,
                     temperature=self.config.model.temperature,
                     max_tokens=self.config.model.max_output_tokens,
                 )
+                llm_elapsed = time.time() - llm_start_time
+                self.logger.info(
+                    f"[LLM调用完成] 耗时: {llm_elapsed:.2f}s ({llm_elapsed / 60:.1f}分钟), "
+                    f"响应长度: {len(response)} 字符"
+                )
+                return response
+            except Exception as e:
+                llm_elapsed = time.time() - llm_start_time
+                self.logger.error(
+                    f"[LLM调用失败] 耗时: {llm_elapsed:.2f}s, 错误类型: {type(e).__name__}, "
+                    f"错误信息: {e}\n{traceback.format_exc()}"
+                )
+                raise
+        self.logger.warning("[LLM未配置] LLM 客户端未初始化，跳过本次优化")
         return "LLM 未配置或不可用，跳过本次优化建议。请检查 API 配置。"
 
     def _handle_failed_code_extraction(
@@ -902,6 +1129,9 @@ class PerfAgent:
 
     def _finalize_run(self, ctx: RunContext) -> dict[str, Any]:
         """完成运行并生成最终结果"""
+        finalize_start = time.time()
+        self.logger.info(f"\n[结果汇总开始] 时间: {datetime.now().strftime('%H:%M:%S')}")
+
         initial_trimmed = ctx.initial_performance_value
         best_perf = self._clean_performance_value(ctx.best_performance)
 
@@ -937,7 +1167,8 @@ class PerfAgent:
 
             final_artifacts = "Current Metrics:\n" + metrics_md + "\n\nCurrent Artifacts:\n" + artifacts_md
             final_result["final_artifacts"] = final_artifacts
-        except Exception:
+        except Exception as e:
+            self.logger.warning(f"[构建最终指标失败] {type(e).__name__}: {e}")
             final_result["final_artifacts"] = None
 
         # 汇总最终三项指标
@@ -948,7 +1179,8 @@ class PerfAgent:
                 "memory": perf_metrics.get("memory", "Infinity"),
                 "integral": perf_metrics.get("integral", "Infinity"),
             }
-        except Exception:
+        except Exception as e:
+            self.logger.warning(f"[获取性能指标失败] {type(e).__name__}: {e}")
             final_result["final_metrics"] = {
                 "runtime": "Infinity",
                 "memory": "Infinity",
@@ -973,6 +1205,41 @@ class PerfAgent:
         )
 
         final_result["trajectory_file"] = trajectory_file
+
+        # 计算改进幅度
+        improvement_pct = 0.0
+        if initial_trimmed != float("inf") and initial_trimmed > 0:
+            improvement_pct = (initial_trimmed - best_perf) / initial_trimmed * 100
+
+        # 统计优化历史
+        successful_iterations = sum(1 for h in ctx.optimization_history if h.get("success", False))
+
+        finalize_elapsed = time.time() - finalize_start
+        self.logger.info(
+            f"\n[优化结果总结]\n"
+            f"  📋 基本信息:\n"
+            f"      - 实例ID: {ctx.instance.id}\n"
+            f"      - 语言: {ctx.language}\n"
+            f"      - 优化目标: {ctx.optimization_target}\n"
+            f"      - 执行迭代数: {executed_iterations}\n"
+            f"      - 成功改进迭代数: {successful_iterations}\n"
+            f"\n"
+            f"  📈 性能变化:\n"
+            f"      - 初始 {ctx.optimization_target}: {initial_trimmed} {unit}\n"
+            f"      - 最终 {ctx.optimization_target}: {best_perf} {unit}\n"
+            f"      - 改进幅度: {improvement_pct:.2f}%\n"
+            f"      - 优化成功: {'✅ 是' if final_result['success'] else '❌ 否'}\n"
+            f"\n"
+            f"  📊 最终性能指标:\n"
+            f"      - runtime: {final_result['final_metrics']['runtime']}s\n"
+            f"      - memory: {final_result['final_metrics']['memory']}MB\n"
+            f"      - integral: {final_result['final_metrics']['integral']}MB*s\n"
+            f"      - pass_rate: {ctx.best_pass_rate:.2%}\n"
+            f"\n"
+            f"  📁 轨迹文件: {trajectory_file}\n"
+            f"  ⏱️  结果汇总耗时: {finalize_elapsed:.3f}s"
+        )
+
         return final_result
 
     def _build_optimization_prompt(

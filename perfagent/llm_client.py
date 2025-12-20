@@ -5,16 +5,16 @@ LLM 客户端，支持多种模型和API端点
 import json
 import logging
 import os
+import random
 import threading
 import time
-import random
 from pathlib import Path
 from typing import Any
 
 from openai import OpenAI
 
 try:
-    from openai import APIError, RateLimitError, APITimeoutError, APIConnectionError, BadRequestError
+    from openai import APIConnectionError, APIError, APITimeoutError, BadRequestError, RateLimitError
 except Exception:
     APIError = Exception
     RateLimitError = Exception
@@ -158,12 +158,25 @@ class LLMClient:
         Raises:
             Exception: LLM调用失败时抛出异常
         """
+        from datetime import datetime
+
         # 使用配置中的max_output_tokens作为默认值
         if max_tokens is None:
             max_tokens = self.config.get("max_output_tokens", 4000)
 
+        call_start_time = time.time()
         attempt = 0
+        total_retry_wait_time = 0.0
+        rate_limit_count = 0
+        timeout_count = 0
+        connection_error_count = 0
         last_err: Exception | None = None
+
+        self.logger.info(
+            f"[LLM请求开始] 时间: {datetime.now().strftime('%H:%M:%S')}, "
+            f"消息数: {len(messages)}, max_tokens: {max_tokens}, context: {usage_context or 'default'}"
+        )
+
         while attempt < self.max_retries:
             try:
                 self.logger.debug(f"调用LLM: {len(messages)} 条消息, temp={temperature}, max_tokens={max_tokens}")
@@ -285,28 +298,84 @@ class LLMClient:
                     except Exception as log_e:
                         self.logger.error(f"记录响应失败: {log_e}")
 
+                # 记录成功调用的统计信息
+                total_elapsed = time.time() - call_start_time
+                usage = getattr(response, "usage", None)
+                prompt_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
+                completion_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
+
+                self.logger.info(
+                    f"[LLM请求成功] 总耗时: {total_elapsed:.2f}s ({total_elapsed / 60:.1f}分钟)\n"
+                    f"  - 尝试次数: {attempt + 1}\n"
+                    f"  - 重试等待时间: {total_retry_wait_time:.2f}s\n"
+                    f"  - 实际API耗时: {total_elapsed - total_retry_wait_time:.2f}s\n"
+                    f"  - 限流次数: {rate_limit_count}\n"
+                    f"  - 超时次数: {timeout_count}\n"
+                    f"  - 连接错误次数: {connection_error_count}\n"
+                    f"  - Token使用: prompt={prompt_tokens}, completion={completion_tokens}, "
+                    f"total={prompt_tokens + completion_tokens}\n"
+                    f"  - 响应长度: {len(content) if content else 0} 字符"
+                )
+
                 return content
 
             except Exception as e:
                 last_err = e
                 attempt += 1
                 should_retry = attempt < self.max_retries and self._is_retryable_error(e)
+
+                # 分类错误类型
+                error_type = type(e).__name__
+                if isinstance(e, RateLimitError) or "rate limit" in str(e).lower():
+                    rate_limit_count += 1
+                    error_category = "限流(RateLimit)"
+                elif isinstance(e, APITimeoutError) or "timeout" in str(e).lower():
+                    timeout_count += 1
+                    error_category = "超时(Timeout)"
+                elif isinstance(e, APIConnectionError) or "connection" in str(e).lower():
+                    connection_error_count += 1
+                    error_category = "连接错误(Connection)"
+                else:
+                    error_category = "其他错误"
+
+                elapsed_so_far = time.time() - call_start_time
+                sleep_time = self._compute_sleep(attempt) if should_retry else 0
+
                 try:
                     self.logger.warning(
-                        f"LLM调用失败: {e}; attempt={attempt}/{self.max_retries}; retry={should_retry}; "
-                        f"delay={self.retry_delay}s, backoff={self.retry_backoff_factor}, jitter<={self.retry_jitter}"
+                        f"[LLM调用失败] 第 {attempt}/{self.max_retries} 次尝试\n"
+                        f"  - 错误类别: {error_category}\n"
+                        f"  - 错误类型: {error_type}\n"
+                        f"  - 错误信息: {e}\n"
+                        f"  - 已耗时: {elapsed_so_far:.2f}s\n"
+                        f"  - 将重试: {'是' if should_retry else '否'}\n"
+                        f"  - 等待时间: {sleep_time:.2f}s\n"
+                        f"  - 累计统计: 限流={rate_limit_count}, 超时={timeout_count}, 连接错误={connection_error_count}"
                     )
                 except Exception:
                     pass
+
                 if should_retry:
                     try:
-                        time.sleep(self._compute_sleep(attempt))
+                        time.sleep(sleep_time)
+                        total_retry_wait_time += sleep_time
                     except Exception:
                         time.sleep(self.retry_delay)
+                        total_retry_wait_time += self.retry_delay
                 else:
                     break
 
         # 重试后仍失败，抛出最后一个错误
+        total_elapsed = time.time() - call_start_time
+        self.logger.error(
+            f"[LLM调用最终失败] 总耗时: {total_elapsed:.2f}s\n"
+            f"  - 尝试次数: {attempt}\n"
+            f"  - 重试等待总时间: {total_retry_wait_time:.2f}s\n"
+            f"  - 限流次数: {rate_limit_count}\n"
+            f"  - 超时次数: {timeout_count}\n"
+            f"  - 连接错误次数: {connection_error_count}\n"
+            f"  - 最后错误: {type(last_err).__name__}: {last_err}"
+        )
         assert last_err is not None
         raise last_err
 
