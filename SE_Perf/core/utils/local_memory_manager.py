@@ -77,7 +77,7 @@ class LocalMemoryManager:
         self,
         memory_path: str | Path,
         llm_client: LLMClient | None = None,
-        token_limit: int = 3000,
+        token_limit: int = 1500,
         format_mode: str = "short",
     ) -> None:
         """
@@ -162,9 +162,25 @@ class LocalMemoryManager:
         lines.append("")
         lines.append("### Experience Library (Latest)")
         for item in bank:
-            lines.append(f"#### {item.get('type', '')} Experience: {item.get('title', '')} ")
-            lines.append(f"- ({item.get('type', '')}) {item.get('title', '')} — {item.get('description', '')}")
-            lines.append(f"Content:\n {item.get('content', '')}")
+            item_type = str(item.get("type", "")).strip()
+            title = str(item.get("title", "")).strip()
+            description = str(item.get("description", "")).strip()
+            content = item.get("content", "")
+
+            # 根据类型格式化标题前缀，使成功/失败更清晰
+            if item_type.lower() == "failure":
+                prefix = "⚠️ Avoid"
+                type_label = "Anti-pattern"
+            elif item_type.lower() == "success":
+                prefix = "✅ Apply"
+                type_label = "Better Practice"
+            else:
+                prefix = "📝"
+                type_label = "Observation"
+
+            lines.append(f"#### {prefix}: {title}")
+            lines.append(f"- ({type_label}) {description}")
+            lines.append(f"Content:\n {content}")
         return "\n".join(lines)
 
     def _estimate_chars(self, memory: dict[str, Any]) -> int:
@@ -448,7 +464,7 @@ This memory is local to a single problem and will be shown to the model in later
      - "Same code as previous solution"
 
 3. **Noise vs Success vs Neutral**:
-   - If the improvement is less than about 3% or within typical measurement jitter (e.g., < 0.05 seconds), and there is *no* meaningful strategy change, treat the step as **Neutral**.
+   - If the improvement is within typical measurement jitter, and there is *no* meaningful strategy change, treat the step as **Neutral**.
    - Only mark `"step_outcome": "Success"` when:
      - There is a real metric improvement **and**
      - You can tie it to a strategy-level code change.
@@ -648,7 +664,7 @@ Given the previous and current solutions, you must:
      - "Same code as previous solution"
 
 3. **Noise vs Failure vs Neutral**:
-   - If the regression is less than about 3% or within typical measurement jitter (e.g., < 0.05 seconds), and there is *no* meaningful strategy change, treat the step as **Neutral**.
+   - If the regression is typical measurement jitter, and there is *no* meaningful strategy change, treat the step as **Neutral**.
    - Only mark `"step_outcome": "Failure"` when:
      - Runtime, memory, or correctness clearly got worse **and**
      - You can tie it to a strategy-level change (e.g., added redundant checks, switched to a slower algorithm, broke edge cases).
@@ -706,8 +722,8 @@ You must output a single JSON object **strictly** adhering to this schema:
   "new_memory_items": [
     {
       "type": "Failure | Neutral",
-      "title": "Concise title of the anti-pattern or failure mode.",
-      "description": "One-sentence summary of why this approach is dangerous.",
+      "title": "Start with 'Avoid ...' for Failure type (e.g., 'Avoid recursive solution without memoization').",
+      "description": "One-sentence summary of why this approach is dangerous and should be avoided.",
       "content": "2–6 bullet points explaining what went wrong, under what conditions it fails, and how to avoid it.",
       "evidence": [
         {
@@ -891,13 +907,30 @@ The optimization target is **integral**:
             evidence_src = raw.get("evidence") if isinstance(raw.get("evidence"), list) else []
             evidence = [e for e in evidence_src if isinstance(e, dict)]
 
+            # 根据 status 初始化计数（如果 LLM 没有返回计数）
+            raw_success = raw.get("success_count")
+            raw_failure = raw.get("failure_count")
+            if raw_success is not None:
+                success_count = int(raw_success)
+            elif status.lower() in ("success", "baseline"):
+                success_count = 1
+            else:
+                success_count = 0
+
+            if raw_failure is not None:
+                failure_count = int(raw_failure)
+            elif status.lower() == "failed":
+                failure_count = 1
+            else:
+                failure_count = 0
+
             board.append(
                 {
                     "direction": direction,
                     "description": description,
                     "status": status,
-                    "success_count": int(raw.get("success_count") or 0),
-                    "failure_count": int(raw.get("failure_count") or 0),
+                    "success_count": success_count,
+                    "failure_count": failure_count,
                     "evidence": evidence,
                 }
             )
@@ -977,7 +1010,7 @@ The optimization target is **integral**:
         system_prompt = f"""
 You are the **Chief Knowledge Officer** of an evolutionary coding agent.
 Your job is to **compress and consolidate** the agent's local memory so that it remains:
-- small enough to fit within a token limit (~{token_limit} tokens), and
+- small enough to fit within a token limit (~{token_limit} tokens/characters), and
 - rich enough to guide future evolution.
 
 The memory you receive has two main components:
@@ -1001,7 +1034,6 @@ Each item in `direction_board` has the schema:
 - `metrics_delta`
 - `code_change`
 - `context`
-- (optionally) `step_outcome`
 
 Your tasks:
 

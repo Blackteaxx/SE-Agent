@@ -123,7 +123,7 @@ class GlobalMemoryManager:
             self.logger.warning(f"全局记忆更新失败: {e}")
             return 0
 
-    def retrieve(self, queries: list[str], k: int = 3, context: dict[str, Any] | None = None) -> str:
+    def retrieve(self, queries: list[str], k: int = 2, context: dict[str, Any] | None = None) -> str:
         """根据查询检索相关经验，并在检索后进行逐项相关性筛选，最终格式化返回。
 
         Args:
@@ -334,18 +334,18 @@ The optimization target is **integral**:
 
 ## Guidelines
 
-Your goal is to compare and contrast these trajectories to identifythe most useful and generalizable
+Your goal is to compare and contrast these trajectories to identify the most useful and generalizable
 strategies as memory items.
 
 Use self-contrast reasoning:
 - Identify patterns and strategies that consistently led to success.
-- Identify mistakes or inefficiencies from failed trajectories and formulatestrategies
+- Identify mistakes or inefficiencies from failed trajectories and formulate strategies
 - Prefer strategies that generalize beyond specific tasks
 
 ## Important notes
 
 - Think first: Why did some steps succeed while others failed?
-- You can extract at most 5 memory items from all steps combined.
+- You can extract at most 3 memory items from all steps combined.
 - Do not repeat similar or overlapping items.
 - Do not mention specific websites, queries, or string contents —— focus on generalizable behaviors and reasoning patterns.
 - Make sure each memory item captures actionable and transferable insights.
@@ -356,9 +356,10 @@ Your output must strictly follow the JSON format shown below:
   "thought_process": "Briefly explain how you compressed and merged the memory (max 2 sentences).",
   "experiences": [
     {
-      "title": "The title of the memory item",
-      "description": "one sentence summary of the memory item",
-      "content": "1-5 sentences describing the insights learned to successfully accomplishing the task"
+      "type": "Success | Failure",
+      "title": "For Success: a clear practice name. For Failure: start with 'Avoid ...' (e.g., 'Avoid recursive solution without memoization').",
+      "description": "one sentence summary of the memory item. For Failure type, explain why this approach is dangerous and should be avoided.",
+      "content": "1-5 sentences describing the insights learned to successfully accomplishing the task, or for Failure type, what went wrong and how to avoid it."
     }
   ]
 }
@@ -484,12 +485,24 @@ Your output must strictly follow the JSON format shown below:
     def _render_experience_markdown(self, item: dict[str, Any], instance_name: str) -> str:
         lines: list[str] = []
 
+        item_type = str(item.get("type") or "").strip()
         title = str(item.get("title") or "")
         desc = str(item.get("description") or "")
 
-        lines.append(f"### Experience: {title} ")
+        # 根据类型格式化标题前缀，使成功/失败更清晰
+        if item_type.lower() == "failure":
+            prefix = "⚠️ Avoid"
+            type_label = "Anti-pattern"
+        elif item_type.lower() == "success":
+            prefix = "✅ Apply"
+            type_label = "Better Practice"
+        else:
+            prefix = "📝"
+            type_label = "Observation"
+
+        lines.append(f"### {prefix}: {title}")
         lines.append(f"- Instance: {instance_name}")
-        lines.append(f"- {title} — {desc}")
+        lines.append(f"- ({type_label}) {desc}")
         cnt = item.get("content")
         lines.append("#### Content")
         if isinstance(cnt, list):
