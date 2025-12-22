@@ -72,6 +72,8 @@ RE_IMPROVEMENT = re.compile(r"改进幅度[：:]\s*([-\d.]+)%")
 RE_MAX_RETRY = re.compile(rb"attempt=10/10")
 RE_LIMITING = re.compile(rb"5513-chatGPt\.limiting")
 RE_LLM_CALL = re.compile(r"调用LLM:".encode())
+RE_TOKEN_USAGE = re.compile(r"Token使用:".encode())
+RE_KEY_LIMIT_EXCEEDED = re.compile(rb"Key limit exceeded")
 RE_LOG_TIMESTAMP = re.compile(rb"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})")
 
 
@@ -94,20 +96,34 @@ class BestIterInfo(NamedTuple):
     performance_history: tuple[tuple[int, float], ...]  # (iteration, performance) 历史
 
 
+class TokenStats(NamedTuple):
+    """Token 使用统计"""
+
+    total_prompt_tokens: int  # 总输入 token 数
+    total_completion_tokens: int  # 总输出 token 数
+    total_tokens: int  # 总 token 数
+    by_context: dict[str, dict[str, int]]  # 按上下文分类的 token 统计
+
+
 class TaskStats(NamedTuple):
     """任务统计结果"""
 
     task_name: str
-    # 任务运行时间
+    # 任务运行时间 (来自 se_framework.log 时间戳差值)
     total_run_time: float  # 总运行时间 (秒)
-    # LLM 重试相关
+    # LLM 重试相关 (来自 se_framework.log)
     max_retry_count: int  # attempt=10/10 的次数
     total_limiting_count: int  # 限流次数
-    total_llm_calls: int  # 总 LLM 调用次数
-    # LLM 耗时相关
-    total_llm_time: float  # 总 LLM 调用时间 (秒)
-    avg_llm_time: float  # 平均 LLM 调用时间 (秒)
-    # 评估耗时相关
+    total_llm_calls: int  # 总 LLM 调用次数 (整个框架，来自 se_framework.log)
+    key_limit_exceeded_count: int  # API Key 限额错误次数
+    # SE Framework LLM 耗时相关 (来自 se_framework.log)
+    se_llm_total_time: float  # SE Framework LLM 调用总时间 (秒)
+    se_llm_avg_time: float  # SE Framework 平均 LLM 调用时间 (秒)
+    se_llm_call_count: int  # SE Framework LLM 调用次数 (实际配对的)
+    # PerfAgent LLM 耗时相关 (来自 perfagent.log)
+    total_llm_time: float  # PerfAgent LLM 调用时间 (秒)
+    avg_llm_time: float  # PerfAgent 平均 LLM 调用时间 (秒)
+    # 评估耗时相关 (来自 perfagent.log)
     eval_count: int  # 评估次数
     total_eval_time: float  # 总评估时间 (秒)
     avg_eval_time: float  # 平均评估时间 (秒)
@@ -125,6 +141,8 @@ class TaskStats(NamedTuple):
     eval_details: tuple[EvalDetail, ...]  # 所有评估详情
     # 最优迭代信息
     best_iter_info: BestIterInfo | None  # 达到最优性能的迭代信息
+    # Token 使用统计 (来自 token_usage.jsonl)
+    token_stats: TokenStats | None  # Token 使用统计
 
 
 def parse_log_timestamp(ts_bytes: bytes) -> datetime | None:
@@ -133,6 +151,54 @@ def parse_log_timestamp(ts_bytes: bytes) -> datetime | None:
         ts_str = ts_bytes.decode("utf-8")
         return datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S,%f")
     except (ValueError, UnicodeDecodeError):
+        return None
+
+
+def analyze_token_usage(task_dir: Path) -> TokenStats | None:
+    """
+    分析 token_usage.jsonl 文件，统计 Token 使用量。
+
+    Returns:
+        TokenStats | None: Token 使用统计，如果无法解析则返回 None
+    """
+    token_file = task_dir / "token_usage.jsonl"
+    if not token_file.exists():
+        return None
+
+    total_prompt = 0
+    total_completion = 0
+    total_tokens = 0
+    by_context: dict[str, dict[str, int]] = {}
+
+    try:
+        with open(token_file, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                    pt = int(rec.get("prompt_tokens") or 0)
+                    ct = int(rec.get("completion_tokens") or 0)
+                    tt = int(rec.get("total_tokens") or (pt + ct))
+                    ctx = str(rec.get("context") or "unknown")
+
+                    total_prompt += pt
+                    total_completion += ct
+                    total_tokens += tt
+
+                    agg = by_context.setdefault(ctx, {"prompt": 0, "completion": 0, "total": 0})
+                    agg["prompt"] += pt
+                    agg["completion"] += ct
+                    agg["total"] += tt
+                except Exception:
+                    continue
+
+        return TokenStats(
+            total_prompt_tokens=total_prompt,
+            total_completion_tokens=total_completion,
+            total_tokens=total_tokens,
+            by_context=by_context,
+        )
+
+    except Exception:
         return None
 
 
@@ -246,6 +312,11 @@ def analyze_se_framework_log(log_path: Path) -> dict:
         "total_limiting_count": 0,
         "total_llm_calls": 0,
         "total_run_time": 0.0,
+        # SE Framework LLM 调用时间统计
+        "se_llm_total_time": 0.0,
+        "se_llm_times": [],  # 每次调用的耗时列表
+        # API Key 限额错误
+        "key_limit_exceeded_count": 0,
     }
 
     if not log_path.exists():
@@ -260,6 +331,7 @@ def analyze_se_framework_log(log_path: Path) -> dict:
         stats["max_retry_count"] = len(RE_MAX_RETRY.findall(content))
         stats["total_limiting_count"] = len(RE_LIMITING.findall(content))
         stats["total_llm_calls"] = len(RE_LLM_CALL.findall(content))
+        stats["key_limit_exceeded_count"] = len(RE_KEY_LIMIT_EXCEEDED.findall(content))
 
         # 提取开始和结束时间，计算总运行时间
         lines = content.split(b"\n")
@@ -267,37 +339,54 @@ def analyze_se_framework_log(log_path: Path) -> dict:
         end_time = None
         end_time_marker = None
 
-        # 找第一个有效时间戳
-        for line in lines:
-            match = RE_LOG_TIMESTAMP.match(line)
-            if match:
-                start_time = parse_log_timestamp(match.group(1))
-                break
+        # 解析 LLM 调用时间对: "调用LLM:" -> "Token使用:"
+        llm_call_start: datetime | None = None
+        llm_times: list[float] = []
 
-        # 找到首次出现"生成最终结果 final.json"所在行的时间戳作为结束时间
         for line in lines:
-            if b"final.json" in line:
+            ts_match = RE_LOG_TIMESTAMP.match(line)
+            if not ts_match:
+                continue
+
+            ts = parse_log_timestamp(ts_match.group(1))
+            if ts is None:
+                continue
+
+            # 记录第一个时间戳
+            if start_time is None:
+                start_time = ts
+
+            # 检查是否是 LLM 调用开始
+            if b"- \xe8\xb0\x83\xe7\x94\xa8LLM:" in line:  # "调用LLM:" 的 UTF-8 编码
+                llm_call_start = ts
+            # 检查是否是 LLM 调用结束 (Token使用)
+            elif b"Token\xe4\xbd\xbf\xe7\x94\xa8:" in line and llm_call_start is not None:  # "Token使用:" 的 UTF-8 编码
+                llm_duration = (ts - llm_call_start).total_seconds()
+                if llm_duration >= 0:  # 防止时间戳解析错误导致负数
+                    llm_times.append(llm_duration)
+                llm_call_start = None
+
+            # 检查是否是结束标记
+            if b"final.json" in line and end_time_marker is None:
                 try:
                     text = line.decode("utf-8", errors="ignore")
                     if "生成最终结果 final.json" in text:
-                        m = RE_LOG_TIMESTAMP.match(line)
-                        if m:
-                            end_time_marker = parse_log_timestamp(m.group(1))
-                            break
+                        end_time_marker = ts
                 except Exception:
-                    continue
+                    pass
 
-        # 找最后一个有效时间戳
-        for line in reversed(lines):
-            match = RE_LOG_TIMESTAMP.match(line)
-            if match:
-                end_time = parse_log_timestamp(match.group(1))
-                break
+            # 更新最后时间戳
+            end_time = ts
 
+        # 计算总运行时间
         if start_time:
             chosen_end = end_time_marker or end_time
             if chosen_end:
                 stats["total_run_time"] = (chosen_end - start_time).total_seconds()
+
+        # 保存 LLM 调用时间统计
+        stats["se_llm_times"] = llm_times
+        stats["se_llm_total_time"] = sum(llm_times)
 
     except Exception as e:
         print(f"Warning: 无法分析 {log_path}: {e}", file=sys.stderr)
@@ -552,20 +641,30 @@ def analyze_single_task(task_dir: Path) -> TaskStats:
     # 分析 traj.pool（最优迭代信息）
     best_iter_info = analyze_traj_pool(task_dir)
 
-    # 计算平均值
-    avg_eval_time = 0.0
-    if eval_stats["eval_count"] > 0:
-        avg_eval_time = eval_stats["total_eval_time"] / eval_stats["eval_count"]
+    # 分析 token_usage.jsonl（Token 使用统计）
+    token_stats = analyze_token_usage(task_dir)
 
+    # 计算 PerfAgent LLM 平均时间
     avg_llm_time = 0.0
     llm_call_count = len(eval_stats["llm_times"])
     if llm_call_count > 0:
         avg_llm_time = eval_stats["total_llm_time"] / llm_call_count
 
-    # 优先使用 perfagent.log 中的总运行时间（更准确）
-    total_run_time = eval_stats["total_run_time"]
-    if total_run_time <= 0:
-        total_run_time = se_stats["total_run_time"]
+    # 计算 SE Framework LLM 平均时间
+    se_llm_times = se_stats.get("se_llm_times", [])
+    se_llm_call_count = len(se_llm_times)
+    se_llm_avg_time = 0.0
+    if se_llm_call_count > 0:
+        se_llm_avg_time = se_stats["se_llm_total_time"] / se_llm_call_count
+
+    # 计算评估平均时间
+    avg_eval_time = 0.0
+    if eval_stats["eval_count"] > 0:
+        avg_eval_time = eval_stats["total_eval_time"] / eval_stats["eval_count"]
+
+    # 整个任务的运行时间从 se_framework.log 获取（时间戳差值）
+    # perfagent.log 中的 total_run_time 是单次迭代的耗时，不是整个任务的运行时间
+    total_run_time = se_stats["total_run_time"]
 
     return TaskStats(
         task_name=task_name,
@@ -573,6 +672,10 @@ def analyze_single_task(task_dir: Path) -> TaskStats:
         max_retry_count=se_stats["max_retry_count"],
         total_limiting_count=se_stats["total_limiting_count"],
         total_llm_calls=se_stats["total_llm_calls"] or llm_call_count,
+        key_limit_exceeded_count=se_stats["key_limit_exceeded_count"],
+        se_llm_total_time=se_stats["se_llm_total_time"],
+        se_llm_avg_time=se_llm_avg_time,
+        se_llm_call_count=se_llm_call_count,
         total_llm_time=eval_stats["total_llm_time"],
         avg_llm_time=avg_llm_time,
         eval_count=eval_stats["eval_count"],
@@ -588,6 +691,7 @@ def analyze_single_task(task_dir: Path) -> TaskStats:
         max_eval_detail=eval_stats["max_eval_detail"],
         eval_details=tuple(eval_stats["eval_details"]),
         best_iter_info=best_iter_info,
+        token_stats=token_stats,
     )
 
 
@@ -756,13 +860,16 @@ def print_stats(results: list[TaskStats], title: str):
     min_run_time = min(run_times) if run_times else 0
 
     # LLM 耗时统计
-    total_llm_time = sum(r.total_llm_time for r in results)
+    total_perfagent_llm_time = sum(r.total_llm_time for r in results)
+    total_se_llm_time = sum(r.se_llm_total_time for r in results)
+    total_all_llm_time = total_perfagent_llm_time + total_se_llm_time
     total_eval_time = sum(r.total_eval_time for r in results)
 
     # 总体统计
     total_max_retry = sum(r.max_retry_count for r in results)
     total_limiting = sum(r.total_limiting_count for r in results)
     total_llm_calls = sum(r.total_llm_calls for r in results)
+    total_se_llm_calls = sum(r.se_llm_call_count for r in results)
     tasks_with_retry = sum(1 for r in results if r.max_retry_count > 0)
 
     # 优化结果统计
@@ -774,14 +881,76 @@ def print_stats(results: list[TaskStats], title: str):
     print(f"  - 任务总数: {len(results)}")
     print(f"  - 总运行时间: {format_duration(total_run_time)} (平均: {format_duration(avg_run_time)})")
     print(f"  - 运行时间范围: {format_duration(min_run_time)} ~ {format_duration(max_run_time)}")
+
+    print("\n⏱️  LLM 调用时间统计:")
     print(
-        f"  - 总 LLM 调用时间: {format_duration(total_llm_time)} ({total_llm_time / max(total_run_time, 1) * 100:.1f}%)"
+        f"  - SE Framework LLM 调用时间: {format_duration(total_se_llm_time)} ({total_se_llm_time / max(total_run_time, 1) * 100:.1f}%)"
+    )
+    print(
+        f"  - PerfAgent LLM 调用时间: {format_duration(total_perfagent_llm_time)} ({total_perfagent_llm_time / max(total_run_time, 1) * 100:.1f}%)"
+    )
+    print(
+        f"  - 总 LLM 调用时间: {format_duration(total_all_llm_time)} ({total_all_llm_time / max(total_run_time, 1) * 100:.1f}%)"
     )
     print(f"  - 总评估时间: {format_duration(total_eval_time)} ({total_eval_time / max(total_run_time, 1) * 100:.1f}%)")
+
+    # Key limit exceeded 统计
+    total_key_limit_exceeded = sum(r.key_limit_exceeded_count for r in results)
+    tasks_with_key_limit = sum(1 for r in results if r.key_limit_exceeded_count > 0)
+
+    print("\n📡 LLM 调用次数统计:")
+    print(f"  - SE Framework LLM 调用次数 (配对): {total_se_llm_calls}")
+    print(f"  - 总 LLM 调用次数 (se_framework 日志): {total_llm_calls}")
     print(f"  - 有最大重试的任务数: {tasks_with_retry}")
     print(f"  - 总达到最大重试次数 (attempt=10/10): {total_max_retry}")
     print(f"  - 总限流次数: {total_limiting}")
-    print(f"  - 总 LLM 调用次数: {total_llm_calls}")
+    if total_key_limit_exceeded > 0:
+        print(f"  - ⚠️  Key limit exceeded 错误: {total_key_limit_exceeded} 次 ({tasks_with_key_limit} 个任务)")
+
+    # Token 使用统计
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    total_all_tokens = 0
+    token_by_context: dict[str, dict[str, int]] = {}
+    tasks_with_token_stats = 0
+
+    for r in results:
+        if r.token_stats:
+            tasks_with_token_stats += 1
+            total_prompt_tokens += r.token_stats.total_prompt_tokens
+            total_completion_tokens += r.token_stats.total_completion_tokens
+            total_all_tokens += r.token_stats.total_tokens
+            for ctx, vals in r.token_stats.by_context.items():
+                agg = token_by_context.setdefault(ctx, {"prompt": 0, "completion": 0, "total": 0})
+                agg["prompt"] += vals.get("prompt", 0)
+                agg["completion"] += vals.get("completion", 0)
+                agg["total"] += vals.get("total", 0)
+
+    def format_tokens(n: int) -> str:
+        """格式化 token 数量（K/M 单位）"""
+        if n >= 1_000_000:
+            return f"{n / 1_000_000:.2f}M"
+        elif n >= 1_000:
+            return f"{n / 1_000:.1f}K"
+        else:
+            return str(n)
+
+    print("\n🪙 Token 使用统计:")
+    print(f"  - 有 Token 统计的任务数: {tasks_with_token_stats}/{len(results)}")
+    print(f"  - 总 Token 数: {format_tokens(total_all_tokens)} ({total_all_tokens:,})")
+    print(f"  - 总 Prompt Token: {format_tokens(total_prompt_tokens)} ({total_prompt_tokens:,})")
+    print(f"  - 总 Completion Token: {format_tokens(total_completion_tokens)} ({total_completion_tokens:,})")
+    if tasks_with_token_stats > 0:
+        avg_tokens_per_task = total_all_tokens / tasks_with_token_stats
+        print(f"  - 平均每任务 Token 数: {format_tokens(int(avg_tokens_per_task))}")
+
+    if token_by_context:
+        print("  - 按上下文分类:")
+        # 按 total 排序
+        sorted_contexts = sorted(token_by_context.items(), key=lambda x: x[1]["total"], reverse=True)
+        for ctx, vals in sorted_contexts:
+            pct = vals["total"] / max(total_all_tokens, 1) * 100
+            print(f"      {ctx}: {format_tokens(vals['total'])} ({pct:.1f}%)")
 
     print("\n📈 优化结果统计:")
     print(f"  - 优化成功任务数: {success_count}/{len(results)} ({success_count / max(len(results), 1) * 100:.1f}%)")
@@ -802,6 +971,14 @@ def print_stats(results: list[TaskStats], title: str):
         if r.max_retry_count > 0:
             print(f"  {r.task_name}: {r.max_retry_count} 次")
 
+    # Key limit exceeded 错误 TOP 20
+    if total_key_limit_exceeded > 0:
+        print("\n⚠️  Key limit exceeded 错误 TOP 20:")
+        sorted_by_key_limit = sorted(results, key=lambda x: x.key_limit_exceeded_count, reverse=True)[:20]
+        for r in sorted_by_key_limit:
+            if r.key_limit_exceeded_count > 0:
+                print(f"  {r.task_name}: {r.key_limit_exceeded_count} 次")
+
     # 评估耗时 TOP 20 (按平均耗时)
     print("\n⏱️  评估耗时 TOP 20 (按平均耗时排序):")
     sorted_by_avg = sorted(results, key=lambda x: x.avg_eval_time, reverse=True)[:20]
@@ -809,12 +986,22 @@ def print_stats(results: list[TaskStats], title: str):
         if r.eval_count > 0:
             print(f"  {r.task_name}: 次数={r.eval_count}, 平均={r.avg_eval_time:.1f}s, 最大={r.max_eval_time:.1f}s")
 
-    # LLM 耗时 TOP 20
-    print("\n🤖 LLM 调用耗时 TOP 20 (按总耗时排序):")
+    # PerfAgent LLM 耗时 TOP 20
+    print("\n🤖 PerfAgent LLM 调用耗时 TOP 20 (按总耗时排序):")
     sorted_by_llm = sorted(results, key=lambda x: x.total_llm_time, reverse=True)[:20]
     for r in sorted_by_llm:
         if r.total_llm_time > 0:
             print(f"  {r.task_name}: 总计={format_duration(r.total_llm_time)}, 平均={r.avg_llm_time:.1f}s")
+
+    # SE Framework LLM 耗时 TOP 20
+    print("\n🔧 SE Framework LLM 调用耗时 TOP 20 (按总耗时排序):")
+    sorted_by_se_llm = sorted(results, key=lambda x: x.se_llm_total_time, reverse=True)[:20]
+    for r in sorted_by_se_llm:
+        if r.se_llm_total_time > 0:
+            print(
+                f"  {r.task_name}: 总计={format_duration(r.se_llm_total_time)}, "
+                f"调用次数={r.se_llm_call_count}, 平均={r.se_llm_avg_time:.1f}s"
+            )
 
     # 异常情况 (最大评估时间 > 300s)
     print("\n⚠️  异常评估耗时 (单次 > 300s):")
@@ -865,8 +1052,15 @@ def compare_stats(results1: list[TaskStats], results2: list[TaskStats], title1: 
     total2_limiting = sum(r.total_limiting_count for r in results2)
     total1_llm = sum(r.total_llm_calls for r in results1)
     total2_llm = sum(r.total_llm_calls for r in results2)
-    total1_llm_time = sum(r.total_llm_time for r in results1)
-    total2_llm_time = sum(r.total_llm_time for r in results2)
+    # SE Framework LLM 时间
+    total1_se_llm_time = sum(r.se_llm_total_time for r in results1)
+    total2_se_llm_time = sum(r.se_llm_total_time for r in results2)
+    # PerfAgent LLM 时间
+    total1_perfagent_llm_time = sum(r.total_llm_time for r in results1)
+    total2_perfagent_llm_time = sum(r.total_llm_time for r in results2)
+    # 总 LLM 时间
+    total1_all_llm_time = total1_se_llm_time + total1_perfagent_llm_time
+    total2_all_llm_time = total2_se_llm_time + total2_perfagent_llm_time
 
     print("\n📊 总体对比:")
     print(f"  {'指标':<30} {title1:>15} {title2:>15} {'差异':>10}")
@@ -880,7 +1074,13 @@ def compare_stats(results1: list[TaskStats], results2: list[TaskStats], title1: 
     )
     print(f"  {'总LLM调用次数':<30} {total1_llm:>15} {total2_llm:>15} {total1_llm / max(total2_llm, 1):.1f}x")
     print(
-        f"  {'总LLM调用时间(s)':<30} {total1_llm_time:>15.0f} {total2_llm_time:>15.0f} {total1_llm_time / max(total2_llm_time, 1):.1f}x"
+        f"  {'SE Framework LLM时间(s)':<30} {total1_se_llm_time:>15.0f} {total2_se_llm_time:>15.0f} {total1_se_llm_time / max(total2_se_llm_time, 1):.1f}x"
+    )
+    print(
+        f"  {'PerfAgent LLM时间(s)':<30} {total1_perfagent_llm_time:>15.0f} {total2_perfagent_llm_time:>15.0f} {total1_perfagent_llm_time / max(total2_perfagent_llm_time, 1):.1f}x"
+    )
+    print(
+        f"  {'总LLM时间(s)':<30} {total1_all_llm_time:>15.0f} {total2_all_llm_time:>15.0f} {total1_all_llm_time / max(total2_all_llm_time, 1):.1f}x"
     )
 
     # 相同任务对比
@@ -907,27 +1107,42 @@ def export_json(results: list[TaskStats], output_path: Path):
     """导出结果为 JSON"""
     data = []
     for r in results:
-        data.append(
-            {
-                "task_name": r.task_name,
-                "total_run_time": r.total_run_time,
-                "max_retry_count": r.max_retry_count,
-                "total_limiting_count": r.total_limiting_count,
-                "total_llm_calls": r.total_llm_calls,
-                "total_llm_time": r.total_llm_time,
-                "avg_llm_time": r.avg_llm_time,
-                "eval_count": r.eval_count,
-                "total_eval_time": r.total_eval_time,
-                "avg_eval_time": r.avg_eval_time,
-                "max_eval_time": r.max_eval_time,
-                "min_eval_time": r.min_eval_time,
-                "iter_count": r.iter_count,
-                "success_iter_count": r.success_iter_count,
-                "opt_success": r.opt_success,
-                "final_pass_rate": r.final_pass_rate,
-                "improvement_pct": r.improvement_pct,
+        task_data = {
+            "task_name": r.task_name,
+            "total_run_time": r.total_run_time,
+            "max_retry_count": r.max_retry_count,
+            "total_limiting_count": r.total_limiting_count,
+            "total_llm_calls": r.total_llm_calls,
+            "key_limit_exceeded_count": r.key_limit_exceeded_count,
+            # SE Framework LLM 统计
+            "se_llm_total_time": r.se_llm_total_time,
+            "se_llm_avg_time": r.se_llm_avg_time,
+            "se_llm_call_count": r.se_llm_call_count,
+            # PerfAgent LLM 统计
+            "perfagent_llm_time": r.total_llm_time,
+            "perfagent_llm_avg_time": r.avg_llm_time,
+            # 评估统计
+            "eval_count": r.eval_count,
+            "total_eval_time": r.total_eval_time,
+            "avg_eval_time": r.avg_eval_time,
+            "max_eval_time": r.max_eval_time,
+            "min_eval_time": r.min_eval_time,
+            # 迭代统计
+            "iter_count": r.iter_count,
+            "success_iter_count": r.success_iter_count,
+            "opt_success": r.opt_success,
+            "final_pass_rate": r.final_pass_rate,
+            "improvement_pct": r.improvement_pct,
+        }
+        # Token 统计
+        if r.token_stats:
+            task_data["token_stats"] = {
+                "total_prompt_tokens": r.token_stats.total_prompt_tokens,
+                "total_completion_tokens": r.token_stats.total_completion_tokens,
+                "total_tokens": r.token_stats.total_tokens,
+                "by_context": r.token_stats.by_context,
             }
-        )
+        data.append(task_data)
 
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
