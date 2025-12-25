@@ -639,13 +639,9 @@ class TrajPoolManager:
                         try:
                             if self.memory_manager:
                                 ctx = self._gather_memory_context(inst_name, res, pool_data)
-                                # 如果有 source entries，才进行记忆提炼与更新
-                                if ctx.get("source_entries"):
-                                    self.memory_manager.extract_and_update(**ctx)
-                                else:
-                                    self.logger.info(
-                                        f"实例 '{inst_name}' 标签 '{res.get('label')}' 无 source entries，跳过记忆提炼与更新。"
-                                    )
+                                # 无论是否有 source entries，都进行记忆提炼与更新
+                                # 初始解（无 source entries）会触发 initial prompt 分支
+                                self.memory_manager.extract_and_update(**ctx)
                         except Exception as me:
                             self.logger.warning(
                                 f"本地记忆提炼失败（实例 '{inst_name}' 标签 '{res.get('label')}'): {me}"

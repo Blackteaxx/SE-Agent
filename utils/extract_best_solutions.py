@@ -165,11 +165,99 @@ def extract_best_solution_from_traj_pool(
     return best
 
 
+def load_fallback_data(
+    report_file: Path | None,
+    solution_file: Path | None,
+) -> tuple[dict | None, dict | None]:
+    """
+    加载 fallback 数据：报告文件和解决方案文件。
+
+    Args:
+        report_file: 报告文件路径（如 report/deepseek-chat-v3-0324.json）
+        solution_file: 解决方案文件路径（如 data/deepseek-chat-v3-0324-sol.json）
+
+    Returns:
+        (report_data, solution_data) 元组
+    """
+    report_data = None
+    solution_data = None
+
+    if report_file and report_file.exists():
+        try:
+            with open(report_file, encoding="utf-8") as f:
+                report_data = json.load(f)
+        except Exception as e:
+            print(f"Warning: 无法加载报告文件 {report_file}: {e}", file=sys.stderr)
+
+    if solution_file and solution_file.exists():
+        try:
+            with open(solution_file, encoding="utf-8") as f:
+                solution_data = json.load(f)
+        except Exception as e:
+            print(f"Warning: 无法加载解决方案文件 {solution_file}: {e}", file=sys.stderr)
+
+    return report_data, solution_data
+
+
+def get_fallback_solution(
+    task_name: str,
+    report_data: dict | None,
+    solution_data: dict | None,
+    lang: str = "python3",
+) -> str | None:
+    """
+    从 fallback 数据中获取解决方案。
+
+    如果任务在报告中显示通过（integral_score > 0），则从解决方案文件中提取代码。
+
+    Args:
+        task_name: 任务名称
+        report_data: 报告数据
+        solution_data: 解决方案数据
+        lang: 编程语言（默认 python3）
+
+    Returns:
+        解决方案代码，如果不可用则返回 None
+    """
+    if not report_data or not solution_data:
+        return None
+
+    # 从报告中检查任务是否通过
+    # 报告结构: {model_name: {per_task: {task_name: {lang: {integral_score: ...}}}}}
+    per_task = None
+    for _model_name, model_data in report_data.items():
+        if isinstance(model_data, dict) and "per_task" in model_data:
+            per_task = model_data.get("per_task", {})
+            break
+
+    if not per_task:
+        return None
+
+    task_report = per_task.get(task_name, {})
+    lang_report = task_report.get(lang, {})
+    integral_score = lang_report.get("integral_score", 0)
+
+    # 如果 integral_score > 0，则任务通过
+    if integral_score <= 0:
+        return None
+
+    # 从解决方案文件中提取代码
+    task_solution = solution_data.get(task_name, {})
+    code = task_solution.get(lang)
+
+    if code and isinstance(code, str) and code.strip():
+        return code
+
+    return None
+
+
 def extract_best_solutions(
     experiment_dir: Path,
     max_iterations: int,
     output_path: Path | None = None,
     verbose: bool = True,
+    report_file: Path | None = None,
+    solution_file: Path | None = None,
 ) -> dict[str, str]:
     """
     从实验目录中提取所有已完成任务的最佳解决方案。
@@ -179,6 +267,8 @@ def extract_best_solutions(
         max_iterations: 最大迭代次数
         output_path: 输出文件路径（可选）
         verbose: 是否打印详细信息
+        report_file: 报告文件路径，用于 fallback 检查（可选）
+        solution_file: 解决方案文件路径，用于 fallback 提取（可选）
 
     Returns:
         任务名到最佳代码的映射
@@ -186,6 +276,16 @@ def extract_best_solutions(
     if not experiment_dir.exists():
         print(f"Error: 实验目录不存在: {experiment_dir}", file=sys.stderr)
         return {}
+
+    # 加载 fallback 数据
+    report_data, solution_data = load_fallback_data(report_file, solution_file)
+    if report_file and solution_file:
+        if report_data and solution_data:
+            if verbose:
+                print(f"已加载 fallback 数据: report={report_file}, solution={solution_file}")
+        else:
+            if verbose:
+                print("Warning: fallback 数据加载不完整")
 
     # 收集所有任务目录
     task_dirs = [d for d in experiment_dir.iterdir() if d.is_dir() and not d.name.startswith(".")]
@@ -202,7 +302,9 @@ def extract_best_solutions(
         "extracted": 0,
         "no_valid_solution": 0,
         "skipped": 0,
+        "fallback_used": 0,
     }
+    fallback_tasks: list[str] = []  # 记录使用 fallback 的任务名称
 
     for task_dir in task_dirs:
         task_name = task_dir.name
@@ -221,9 +323,19 @@ def extract_best_solutions(
         best_solution = extract_best_solution_from_traj_pool(traj_pool_path, max_iterations, task_name)
 
         if best_solution is None:
-            stats["no_valid_solution"] += 1
-            if verbose:
-                print(f"  [跳过] {task_name}: 没有找到有效解决方案 (全为 Infinity 或无解)")
+            # 尝试 fallback
+            fallback_code = get_fallback_solution(task_name, report_data, solution_data)
+            if fallback_code:
+                stats["extracted"] += 1
+                stats["fallback_used"] += 1
+                fallback_tasks.append(task_name)
+                results[task_name] = fallback_code
+                if verbose:
+                    print(f"  [fallback] {task_name}: 使用预生成解决方案")
+            else:
+                stats["no_valid_solution"] += 1
+                if verbose:
+                    print(f"  [跳过] {task_name}: 没有找到有效解决方案 (全为 Infinity 或无解)")
             continue
 
         stats["extracted"] += 1
@@ -238,6 +350,10 @@ def extract_best_solutions(
         print(f"  - 任务总数: {stats['total']}")
         print(f"  - 已完成: {stats['completed']}")
         print(f"  - 成功提取: {stats['extracted']}")
+        if stats["fallback_used"] > 0:
+            print(f"    - 其中 fallback: {stats['fallback_used']}")
+            for fb_task in fallback_tasks:
+                print(f"      • {fb_task}")
         print(f"  - 无有效解: {stats['no_valid_solution']}")
         print(f"  - 跳过 (未完成): {stats['skipped']}")
 
@@ -279,17 +395,33 @@ def main():
         action="store_true",
         help="静默模式，不打印详细信息",
     )
+    parser.add_argument(
+        "--report-file",
+        type=str,
+        default=None,
+        help="报告文件路径（用于 fallback 检查，如 report/deepseek-chat-v3-0324.json）",
+    )
+    parser.add_argument(
+        "--solution-file",
+        type=str,
+        default=None,
+        help="预生成解决方案文件路径（用于 fallback 提取，如 data/deepseek-chat-v3-0324-sol.json）",
+    )
 
     args = parser.parse_args()
 
     experiment_dir = Path(args.experiment_dir)
     output_path = Path(args.output)
+    report_file = Path(args.report_file) if args.report_file else None
+    solution_file = Path(args.solution_file) if args.solution_file else None
 
     results = extract_best_solutions(
         experiment_dir=experiment_dir,
         max_iterations=args.max_iterations,
         output_path=output_path,
         verbose=not args.quiet,
+        report_file=report_file,
+        solution_file=solution_file,
     )
 
     if not results:

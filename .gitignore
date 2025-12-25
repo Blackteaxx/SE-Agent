@@ -123,3 +123,5 @@ tmp/*
 programs/*
 analysis/*
 report/*
+data/*
+output/*

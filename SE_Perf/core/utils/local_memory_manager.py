@@ -77,7 +77,7 @@ class LocalMemoryManager:
         self,
         memory_path: str | Path,
         llm_client: LLMClient | None = None,
-        token_limit: int = 1500,
+        token_limit: int = 3000,
         format_mode: str = "short",
     ) -> None:
         """
@@ -143,44 +143,76 @@ class LocalMemoryManager:
         """
         将结构化记忆渲染为简洁的 Markdown 文本，便于注入 System Prompt。
         """
-        gs = memory.get("global_status") or {}
         dirs = memory.get("direction_board") or []
         bank = memory.get("experience_library") or []
 
         lines: list[str] = []
-        lines.append("### Global Status")
-        lines.append(f"- Generation: {gs.get('current_generation', 'N/A')}")
-        lines.append(f"- Current Solution ID: {gs.get('current_solution_id', 'N/A')}")
-        lines.append(f"- Best Solution ID: {gs.get('best_solution_id', 'N/A')}")
-        lines.append("")
-        lines.append("### Strategy Board")
-        for d in dirs:
-            status = d.get("status", "Unknown")
-            succ = d.get("success_count", 0)
-            fail = d.get("failure_count", 0)
-            lines.append(f"- [{status}] {d.get('direction', '')} (✓{succ} ✗{fail}) — {d.get('description', '')}")
-        lines.append("")
-        lines.append("### Experience Library (Latest)")
-        for item in bank:
-            item_type = str(item.get("type", "")).strip()
-            title = str(item.get("title", "")).strip()
-            description = str(item.get("description", "")).strip()
-            content = item.get("content", "")
 
-            # 根据类型格式化标题前缀，使成功/失败更清晰
-            if item_type.lower() == "failure":
-                prefix = "⚠️ Avoid"
-                type_label = "Anti-pattern"
-            elif item_type.lower() == "success":
-                prefix = "✅ Apply"
-                type_label = "Better Practice"
-            else:
-                prefix = "📝"
-                type_label = "Observation"
+        # 总体说明
+        lines.append("## Local Memory (Evolution History)")
+        lines.append("")
+        lines.append("This is the accumulated knowledge from previous optimization attempts on THIS problem.")
+        lines.append("**How to use this memory:**")
+        lines.append("1. **Learn from successful patterns**: Apply or Improve insights from Success experiences.")
+        lines.append("2. **Avoid repeated failures**: Do NOT retry directions that have failed multiple times.")
+        lines.append(
+            "3. **Explore new directions**: If existing directions are exhausted, try fundamentally different approaches."
+        )
+        lines.append("")
 
-            lines.append(f"#### {prefix}: {title}")
-            lines.append(f"- ({type_label}) {description}")
-            lines.append(f"Content:\n {content}")
+        # Tried Directions 部分
+        lines.append("### Tried Directions (Strategy Board)")
+        lines.append("")
+        lines.append("These are high-level optimization strategies that have been attempted.")
+        lines.append("- **[Success]**: This direction worked well. Consider building upon it.")
+        lines.append("- **[Failed]**: This direction did NOT work. Do NOT retry the same approach.")
+        lines.append("- **[Neutral]**: No effect; may be worth exploring with modifications.")
+        lines.append("- **(✓N ✗M)**: N successful attempts, M failed attempts.")
+        lines.append("")
+
+        if dirs:
+            for d in dirs:
+                status = d.get("status", "Unknown")
+                succ = d.get("success_count", 0)
+                fail = d.get("failure_count", 0)
+                lines.append(f"- [{status}] {d.get('direction', '')} (✓{succ} ✗{fail}) — {d.get('description', '')}")
+        else:
+            lines.append("- (No directions recorded yet)")
+        lines.append("")
+
+        # Learned Patterns 部分
+        lines.append("### Learned Patterns (Experience Library)")
+        lines.append("")
+        lines.append("These are specific insights extracted from successful/failed attempts.")
+        lines.append("- **✅ Apply**: Proven techniques that improve performance. Use or Improve Them!")
+        lines.append("- **⚠️ Avoid**: Anti-patterns that caused failures. Do NOT repeat these mistakes!")
+        lines.append("")
+
+        if bank:
+            for item in bank:
+                item_type = str(item.get("type", "")).strip()
+                title = str(item.get("title", "")).strip()
+                description = str(item.get("description", "")).strip()
+                content = item.get("content", "")
+
+                # 根据类型格式化标题前缀，使成功/失败更清晰
+                if item_type.lower() == "failure":
+                    prefix = "⚠️ Avoid"
+                    type_label = "Anti-pattern"
+                elif item_type.lower() == "success":
+                    prefix = "✅ Apply"
+                    type_label = "Better Practice"
+                else:
+                    prefix = "📝"
+                    type_label = "Observation"
+
+                lines.append(f"#### {prefix}: {title}")
+                lines.append(f"- ({type_label}) {description}")
+                lines.append(f"- Detail: {content}")
+                lines.append("")
+        else:
+            lines.append("- (No patterns learned yet)")
+
         return "\n".join(lines)
 
     def _estimate_chars(self, memory: dict[str, Any]) -> int:
@@ -224,10 +256,13 @@ class LocalMemoryManager:
         """
         构造记忆提炼的 System/User 提示词。
         根据性能变化分流进入 Success 或 Failure 分支。
+
+        对于初始解（无 perf_old）：
+        - 如果 perf_new 不为 inf，视为 Success（基线建立成功）
+        - 如果 perf_new 为 inf，视为 Failure（基线建立失败）
         """
         # 1. Metric Analysis
         perf_diff = 0.0
-        is_initial = False
 
         if perf_old is not None and perf_new is not None:
             # Handle inf
@@ -240,20 +275,17 @@ class LocalMemoryManager:
             else:
                 perf_diff = perf_old - perf_new
         elif perf_new is not None:
-            is_initial = True
+            # 初始解：根据 perf_new 是否为 inf 判断成功/失败
+            if not math.isinf(perf_new):
+                # 初始解成功（有有效性能数据），视为正向
+                perf_diff = float("inf")  # 作为 Success 处理
+            else:
+                # 初始解失败（性能为 inf），视为负向
+                perf_diff = float("-inf")  # 作为 Failure 处理
 
-        # 2. Extraction Branch
-        if is_initial:
-            return self._build_initial_prompt(
-                problem_description,
-                perf_new,
-                current_directions,
-                language,
-                optimization_target,
-                current_entry,
-                best_entry,
-            )
-        elif perf_diff > 0:
+        # 2. Extraction Branch - 统一使用 Success/Failure 分支
+        # 不再单独调用 _build_initial_prompt，初始解根据 perf_diff 归入相应分支
+        if perf_diff > 0:
             return self._build_success_prompt(
                 problem_description,
                 perf_old,
@@ -281,124 +313,6 @@ class LocalMemoryManager:
                 optimization_target,
                 current_solution_id,
             )
-
-    def _build_initial_prompt(
-        self,
-        problem,
-        perf_new,
-        directions,
-        language,
-        target,
-        current_entry: dict[str, Any] | None = None,
-        best_entry: dict[str, Any] | None = None,
-    ) -> tuple[str, str]:
-        # 1. System Prompt for Baseline/Initial Solution
-        system_prompt = """You are an expert Algorithm Optimization Specialist. You are analyzing the **initial solution** (Baseline) generated by an agent for a competitive programming problem.
-
-## Goal
-Since there is no previous version to compare against, your task is to **identify the algorithmic strategy** used in the Current Solution and initialize the agent's memory.
-
-## Guidelines for Memory Extraction
-
-1. **Identify Strategy**: Analyze the whole code. What is the core algorithmic paradigm? (e.g., Dynamic Programming, Greedy, BFS, Binary Search, or naive Brute Force).
-2. **Establish Baseline**: The "Memory Item" should describe this fundamental approach.
-3. **Initialize Directions**:
-    - Extract the core approach and add it to "updated_directions".
-    - Mark the outcome as "Baseline" or "Success" (since it is a valid starting point).
-    - If the "Current Directions" list is empty, populate it with this detected strategy.
-
-## Other Hints
-
-- Memory Item Limit: You can add 0-3 new memory items to the reasoning bank.
-
-## Input Data Provided
-You will be given:
-1. **Problem Description**: The algorithmic problem.
-2. **Current Solution**: The generated code and its runtime/memory metrics.
-3. **Best Solution**: The global best solution (for context).
-4. **Optimization Target**: (e.g., runtime, memory).
-5. **Language**: (e.g., C++, Python).
-6. **Current Directions**: Likely empty or contains pre-set hints.
-
-## Output Format
-You must output a single JSON object strictly adhering to this schema:
-
-```json
-{
-  "thought_process": "Briefly explain what algorithm the code uses (e.g., 'The code uses a hash map to store frequencies...').",
-  "new_direction_items": [
-    {
-      "direction": "Short strategy description (e.g., Approach: Dynamic Programming)",
-      "description": "One sentence explaining the baseline approach.",
-      "status": "Baseline",
-      "evidence": [
-        {
-          "solution_id": "Current_Sol_ID",
-          "code_change": "Initial implementation.",
-          "metrics_delta": "N/A",
-          "context": "Baseline"
-        }
-      ]
-    }
-  ],
-  "new_memory_items": []
-}
-        """
-
-        user_template = """
-        
-## Optimization Target
- 
-{optimization_target}
-
-## Language
-
-{language}
-        
-## Problem Description
-        
-{problem_description}
-     
-## Current Solution
-        
-{current_solution}
-
-## Best Solution
-        
-{best_solution}
-
-## Current Direction
-
-{directions}
-        """
-        # Build formatted texts using TrajPoolManager.format_entry
-        try:
-            from .traj_pool_manager import TrajPoolManager
-        except Exception:
-            TrajPoolManager = None  # type: ignore
-
-        def _fmt_entry_text(entry: dict | None) -> str:
-            try:
-                if TrajPoolManager and isinstance(entry, dict):
-                    lbl = str(entry.get("label") or entry.get("solution_id") or "current")
-                    return TrajPoolManager.format_entry({lbl: entry}, include_keys=self._entry_include_keys())
-            except Exception:
-                pass
-            return "N/A"
-
-        current_solution_text = _fmt_entry_text(current_entry)
-        best_solution_text = _fmt_entry_text(best_entry)
-
-        user_prompt = user_template.format(
-            optimization_target=str(target or "Runtime"),
-            language=str(language or "Unknown"),
-            problem_description=str(problem or "N/A"),
-            current_solution=current_solution_text,
-            best_solution=best_solution_text,
-            directions=json.dumps(directions or [], ensure_ascii=False),
-        )
-
-        return system_prompt, user_prompt
 
     def _build_success_prompt(
         self,
@@ -470,12 +384,14 @@ This memory is local to a single problem and will be shown to the model in later
      - You can tie it to a strategy-level code change.
 
 4. **Rich, semantic content**:
-   - `direction` should look like a clear strategy name that could appear on a “strategy board”.
+   - `direction` should look like a clear strategy name that could appear on a "strategy board".
    - `description` should be 1–3 sentences explaining:
      - what the strategy does,
      - when to use it,
      - and potential trade-offs or risks.
-   - `content` in memory items should contain 2–6 bullet points about conditions, mechanism, and risks.
+   - For **Success** memory items:
+     - `title`: Describe the successful technique (e.g., "Use rolling array DP for space optimization")
+     - `content`: Explain **WHY** it works and **WHAT insight** makes it effective. Focus on the key reasoning.
 
 5. **Cardinality constraints**:
    - At most 3 `new_direction_items`.
@@ -521,7 +437,7 @@ You must output a single JSON object **strictly** adhering to this schema:
       "type": "Success | Neutral",
       "title": "Concise title of the reasoning pattern.",
       "description": "One-sentence summary of the insight.",
-      "content": "2–6 bullet points or short paragraphs explaining when to apply this, why it works, and any risks.",
+      "content": "2–6 sentences explaining when to apply this, why it works, and any risks.",
     }
   ]
 }
@@ -531,8 +447,50 @@ Notes:
 - If there is no meaningful strategy-level change, set "step_outcome": "Neutral" and both arrays to [].
 - Do not invent fake strategies just to fill the JSON.
         """
-        user_template = """
-        
+        # 判断是否是初始化场景（无 source entries）
+        is_initial = not source_entries
+
+        if is_initial:
+            # 初始化场景：识别基线策略
+            user_template = """
+## Mode: BASELINE INITIALIZATION
+
+This is the **initial solution** (baseline). There is no previous version to compare against.
+Your task is to **identify the core algorithmic strategy** used in the Current Solution and record it as the baseline.
+
+## Guidelines for Baseline Extraction
+
+1. **Identify Strategy**: Analyze the code. What is the core algorithmic paradigm? (e.g., Dynamic Programming, Greedy, BFS, Binary Search, Simulation, or naive Brute Force).
+2. **Establish Baseline**: Create a direction item describing this fundamental approach with status "Baseline" or "Success".
+3. **No Comparison Needed**: Since there's no source to compare, focus on identifying WHAT strategy the code uses, not HOW it changed.
+
+## Optimization Target
+
+{optimization_target}
+
+## Language
+
+{language}
+
+## Problem Description
+
+{problem_description}
+
+## Current Solution (Baseline)
+
+{current_solution}
+
+## Best Solution
+
+{best_solution}
+
+## Current Directions (Strategy Board Snapshot)
+
+{directions}
+        """
+        else:
+            # 变异场景：比较 source 和 current
+            user_template = """
 ## Optimization Target
 
 {optimization_target}
@@ -595,15 +553,19 @@ The optimization target is **integral**:
         current_solution_text = _fmt_entry_text(current_entry)
         best_solution_text = _fmt_entry_text(best_entry)
 
-        user_prompt = user_template.format(
-            optimization_target=str(target or "Runtime"),
-            language=str(language or "Unknown"),
-            problem_description=str(problem or "N/A"),
-            source_solutions=source_solutions_text,
-            current_solution=current_solution_text,
-            best_solution=best_solution_text,
-            directions=json.dumps(directions or [], ensure_ascii=False),
-        )
+        # 根据是否是初始化场景选择格式化参数
+        format_kwargs = {
+            "optimization_target": str(target or "Runtime"),
+            "language": str(language or "Unknown"),
+            "problem_description": str(problem or "N/A"),
+            "current_solution": current_solution_text,
+            "best_solution": best_solution_text,
+            "directions": json.dumps(directions or [], ensure_ascii=False),
+        }
+        if not is_initial:
+            format_kwargs["source_solutions"] = source_solutions_text
+
+        user_prompt = user_template.format(**format_kwargs)
 
         return system_prompt, user_prompt
 
@@ -670,8 +632,13 @@ Given the previous and current solutions, you must:
      - You can tie it to a strategy-level change (e.g., added redundant checks, switched to a slower algorithm, broke edge cases).
 
 4. **Rich, semantic content**:
-   - Directions should describe *what strategy went wrong* (e.g., “aggressive pruning without correctness proof”, “using recursion with unbounded depth”).
-   - Memory items should explain *why* the strategy failed and **under what conditions** it is dangerous.
+   - Directions should describe *what strategy went wrong* (e.g., "aggressive pruning without correctness proof", "using recursion with unbounded depth").
+   - For **Failure** memory items:
+     - `title`: Describe the **SPECIFIC mistake**, NOT just the approach name.
+       - BAD: "BFS implementation" (too vague)
+       - GOOD: "BFS without boundary check causes index out of bounds"
+       - GOOD: "Recursive factorial without memoization causes TLE for large N"
+     - `content`: Explain **WHY** it failed and **WHAT specific condition** triggered the failure.
 
 5. **Cardinality constraints**:
    - At most 3 `new_direction_items`.
@@ -708,33 +675,14 @@ You must output a single JSON object **strictly** adhering to this schema:
       "direction": "High-level description of the failed strategy.",
       "description": "1–3 sentences explaining what the strategy tried to do and why it is problematic in this context.",
       "status": "Failed | Neutral",
-      "evidence": [
-        {
-          "solution_id": "Current_Sol_ID",
-          "code_change": "Brief summary of the key code edits that introduced the bad strategy.",
-          "metrics_delta": "Exact regression (e.g., Runtime: 120ms -> 200ms, +66% or caused WA/TLE).",
-          "context": "Conditions where this strategy is risky (e.g., deep recursion, large N, dense graph)."
-        }
-      ]
-    }
-  ],
 
   "new_memory_items": [
     {
       "type": "Failure | Neutral",
       "title": "Start with 'Avoid ...' for Failure type (e.g., 'Avoid recursive solution without memoization').",
       "description": "One-sentence summary of why this approach is dangerous and should be avoided.",
-      "content": "2–6 bullet points explaining what went wrong, under what conditions it fails, and how to avoid it.",
-      "evidence": [
-        {
-          "solution_id": "Current_Sol_ID",
-          "code_change": "Brief snippet or description of the harmful change.",
-          "metrics_delta": "Exact regression (e.g., +80ms or increased memory by 2x, or caused incorrect results).",
-          "context": "Problem constraints or inputs that triggered the failure."
-        }
-      ]
-    }
-  ]
+      "content": "2–6 sentences explaining what went wrong, under what conditions it fails, and how to avoid it.",
+
 }
 ```
 
@@ -742,7 +690,54 @@ Notes:
 - If there is no meaningful strategy-level change, set "step_outcome": "Neutral" and both arrays to [].
 - Do not mark previously successful strategies as failed just because one noisy run was slower.
         """
-        user_template = """    
+        # 判断是否是初始化场景（无 source entries）
+        is_initial = not source_entries
+
+        if is_initial:
+            # 初始化失败场景：初始解就失败了（TLE/OOM/WA）
+            user_template = """
+## Mode: BASELINE INITIALIZATION FAILED
+
+This is the **initial solution** (baseline), but it **failed** (TLE, OOM, WA, or other errors).
+There is no previous version to compare against.
+
+Your task is to:
+1. **Identify what strategy the code attempted** (e.g., naive brute force, unoptimized DP, etc.)
+2. **Record why it failed** as a warning for future iterations
+
+## Guidelines for Failed Baseline
+
+- Create a direction item with status "Failed" describing the attempted approach
+- Create a memory item explaining why this approach doesn't work for this problem
+- Focus on identifying the **root cause** of failure (time complexity too high? memory usage too large? edge case bug?)
+
+## Optimization Target
+
+{optimization_target}
+
+## Language
+
+{language}
+
+## Problem Description
+
+{problem_description}
+
+## Current Solution (Failed Baseline)
+
+{current_solution}
+
+## Best Solution
+
+{best_solution}
+
+## Current Directions (Strategy Board Snapshot)
+
+{directions}
+        """
+        else:
+            # 变异失败场景：比较 source 和 current
+            user_template = """    
 ## Optimization Target
 
 {optimization_target}
@@ -806,15 +801,19 @@ The optimization target is **integral**:
         current_solution_text = _fmt_entry_text(current_entry)
         best_solution_text = _fmt_entry_text(best_entry)
 
-        user_prompt = user_template.format(
-            optimization_target=str(target or "Runtime"),
-            language=str(language or "Unknown"),
-            problem_description=str(problem or "N/A"),
-            source_solutions=source_solutions_text,
-            current_solution=current_solution_text,
-            best_solution=best_solution_text,
-            directions=json.dumps(directions or [], ensure_ascii=False),
-        )
+        # 根据是否是初始化场景选择格式化参数
+        format_kwargs = {
+            "optimization_target": str(target or "Runtime"),
+            "language": str(language or "Unknown"),
+            "problem_description": str(problem or "N/A"),
+            "current_solution": current_solution_text,
+            "best_solution": best_solution_text,
+            "directions": json.dumps(directions or [], ensure_ascii=False),
+        }
+        if not is_initial:
+            format_kwargs["source_solutions"] = source_solutions_text
+
+        user_prompt = user_template.format(**format_kwargs)
 
         return system_prompt, user_prompt
 
@@ -963,281 +962,210 @@ The optimization target is **integral**:
         memory["experience_library"] = library
 
     def compress_if_needed(self, memory: dict[str, Any]) -> None:
+        """
+        如果记忆体量超过阈值，分别压缩 direction_board 和 experience_library。
+        """
         try:
             if self._estimate_chars(memory) <= self.token_limit:
                 return
             if not self.llm_client:
                 self.logger.warning("LLM不可用，跳过记忆压缩")
                 return
-            sys_prompt, user_prompt = self._build_compress_prompts(memory, self.token_limit)
-            last_error: str | None = None
-            for attempt in range(1, 4):
-                try:
-                    llm_response = self.llm_client.call_with_system_prompt(
-                        system_prompt=sys_prompt,
-                        user_prompt=user_prompt,
-                        temperature=0.7,
-                        max_tokens=10000,
-                        usage_context="memory.compress",
-                    )
-                    self.logger.debug(f"LLM原始响应 (压缩，第{attempt}次):\n{llm_response}")
-                    llm_response = self.llm_client.clean_think_tags(llm_response)
-                    self.logger.debug(f"LLM清理后响应 (压缩，第{attempt}次):\n{llm_response}")
-                    parsed = self._parse_llm_json(llm_response)
-                    self._validate_compress_response(parsed)
-                    db = parsed.get("direction_board")
-                    if isinstance(db, list):
-                        memory["direction_board"] = db
-                    el = parsed.get("experience_library")
-                    if isinstance(el, list):
-                        memory["experience_library"] = el
 
-                    self.logger.info("LLM记忆压缩成功")
-                    break
-                except ValueError as e:
-                    last_error = "invalid_response_format"
-                    self.logger.warning(f"LLM记忆压缩解析失败: 响应格式错误或无有效JSON片段 (第{attempt}次): {e}")
-                except Exception as e:
-                    last_error = "llm_call_failed"
-                    self.logger.warning(f"LLM记忆压缩调用失败 (第{attempt}次): {e}")
-            if last_error:
-                self.logger.error(f"LLM记忆压缩最终失败: {last_error}")
+            # 分别压缩 direction_board 和 experience_library
+            self._compress_direction_board(memory)
+            self._compress_experience_library(memory)
+
+            self.logger.info("LLM记忆压缩完成")
         except Exception as e:
             self.logger.warning(f"压缩记忆失败: {e}")
 
-    def _build_compress_prompts(self, memory: dict[str, Any], token_limit: int) -> tuple[str, str]:
-        # 1. System Prompt: 同时管理 Reasoning Bank 和 Directions
-        system_prompt = f"""
-You are the **Chief Knowledge Officer** of an evolutionary coding agent.
-Your job is to **compress and consolidate** the agent's local memory so that it remains:
-- small enough to fit within a token limit (~{token_limit} tokens/characters), and
-- rich enough to guide future evolution.
+    def _compress_direction_board(self, memory: dict[str, Any]) -> None:
+        """压缩 direction_board。"""
+        direction_board = memory.get("direction_board") or []
+        if len(direction_board) <= 3:
+            return  # 太少，不需要压缩
 
-The memory you receive has two main components:
-1. `direction_board`: high-level strategies that have been tried on this problem.
-2. `experience_library`: distilled experiences and lessons learned.
+        sys_prompt, user_prompt = self._build_compress_direction_board_prompts(direction_board)
+        last_error: str | None = None
 
-You must output a **cleaned and consolidated** version of BOTH.
+        for attempt in range(1, 4):
+            try:
+                llm_response = self.llm_client.call_with_system_prompt(
+                    system_prompt=sys_prompt,
+                    user_prompt=user_prompt,
+                    temperature=0.7,
+                    max_tokens=10000,
+                    usage_context="memory.compress_directions",
+                )
+                self.logger.debug(f"LLM原始响应 (压缩directions，第{attempt}次):\n{llm_response}")
+                llm_response = self.llm_client.clean_think_tags(llm_response)
+                parsed = self._parse_llm_json(llm_response)
 
----
+                db = parsed.get("direction_board")
+                if isinstance(db, list):
+                    memory["direction_board"] = db
+                    self.logger.info(f"direction_board 压缩成功: {len(direction_board)} -> {len(db)} 条")
+                    return
+            except ValueError as e:
+                last_error = "invalid_response_format"
+                self.logger.warning(f"direction_board 压缩解析失败 (第{attempt}次): {e}")
+            except Exception as e:
+                last_error = "llm_call_failed"
+                self.logger.warning(f"direction_board 压缩调用失败 (第{attempt}次): {e}")
 
-## Part 1: Compress `direction_board` (Strategy Board)
+        if last_error:
+            self.logger.error(f"direction_board 压缩最终失败: {last_error}")
 
-Each item in `direction_board` has the schema:
-- `direction`: high-level strategy name (natural language).
-- `description`: 1–3 sentences explaining what the strategy does and when it applies.
-- `status`: "Success" | "Failed" | "Neutral" | "Untried".
-- `success_count`: integer.
-- `failure_count`: integer.
-- `evidence`: list of objects with fields:
-- `solution_id`
-- `metrics_delta`
-- `code_change`
-- `context`
+    def _compress_experience_library(self, memory: dict[str, Any]) -> None:
+        """压缩 experience_library。"""
+        experience_library = memory.get("experience_library") or []
+        if len(experience_library) <= 3:
+            return  # 太少，不需要压缩
 
-Your tasks:
+        sys_prompt, user_prompt = self._build_compress_experience_library_prompts(experience_library)
+        last_error: str | None = None
+
+        for attempt in range(1, 4):
+            try:
+                llm_response = self.llm_client.call_with_system_prompt(
+                    system_prompt=sys_prompt,
+                    user_prompt=user_prompt,
+                    temperature=0.7,
+                    max_tokens=5000,
+                    usage_context="memory.compress_experiences",
+                )
+                self.logger.debug(f"LLM原始响应 (压缩experiences，第{attempt}次):\n{llm_response}")
+                llm_response = self.llm_client.clean_think_tags(llm_response)
+                parsed = self._parse_llm_json(llm_response)
+
+                el = parsed.get("experience_library")
+                if isinstance(el, list):
+                    memory["experience_library"] = el
+                    self.logger.info(f"experience_library 压缩成功: {len(experience_library)} -> {len(el)} 条")
+                    return
+            except ValueError as e:
+                last_error = "invalid_response_format"
+                self.logger.warning(f"experience_library 压缩解析失败 (第{attempt}次): {e}")
+            except Exception as e:
+                last_error = "llm_call_failed"
+                self.logger.warning(f"experience_library 压缩调用失败 (第{attempt}次): {e}")
+
+        if last_error:
+            self.logger.error(f"experience_library 压缩最终失败: {last_error}")
+
+    def _build_compress_direction_board_prompts(self, direction_board: list[dict[str, Any]]) -> tuple[str, str]:
+        """构建压缩 direction_board 的 prompt。"""
+        system_prompt = """You are compressing the **direction_board** (Strategy Board) of an evolutionary coding agent.
+
+## Task
+Consolidate and compress the list of tried strategies while preserving useful information.
+
+## Rules
 
 1. **Merge semantically similar strategies**
-- If multiple entries describe essentially the same idea (e.g., "Use fast I/O", "Replace cin/cout with scanf", "Enable sync_with_stdio(false) for faster input"),
-    merge them into a SINGLE consolidated direction.
-- Rewrite `direction` as a clear, unique strategy name.
-- Rewrite `description` as a compact but informative description (1–3 sentences).
+   - If multiple entries describe the same idea (e.g., "Use fast I/O", "Replace cin/cout with scanf"), merge them.
+   - Rewrite as a clear, unique strategy name.
 
-2. **Aggregate counts and status**
-- For merged directions, set:
-    - `success_count` = sum of `success_count` from all merged items (treat missing counts as 0).
-    - `failure_count` = sum of `failure_count` from all merged items.
-- Compute `status` as:
-    - "Success" if successes clearly dominate and there is at least one meaningful improvement example.
-    - "Failed" if failures clearly dominate and there is at least one clear regression or correctness issue.
-    - "Neutral" if evidence is weak, conflicting, or mostly within noise/jitter (e.g., < 3% or < 0.05s absolute change).
-- Do NOT invent fake counts. Use only what is implied by the input.
+2. **IMPORTANT: Do NOT merge strategies with DIFFERENT failure modes**
+   - "Precompute factorials caused OOM" and "Iterative computation caused TLE" are DIFFERENT, keep them separate.
+   - "Edge case N=0 failed" and "Large N caused overflow" are DIFFERENT, keep them separate.
 
-3. **Compress evidence**
-- Merge evidence lists from all merged entries.
-- Select at most **3** evidence items per direction.
-- Prefer:
-    - larger performance deltas (absolute or percentage change),
-    - diverse contexts (different input sizes, patterns, or solution styles),
-    - clear code changes that illustrate the strategy.
-- Each evidence item must preserve the fields:
-    - `solution_id`, `code_change`, `metrics_delta`, `context`
-    - (you may keep `step_outcome` if present, but you must not invent it).
+3. **Aggregate counts when merging**
+   - When merging similar strategies, SUM their success_count and failure_count.
+   - Update status based on aggregated counts:
+     - "Success" if success_count > failure_count.
+     - "Failed" if failure_count > success_count.
+     - "Neutral" if counts are equal or evidence is weak.
 
 4. **Prune low-value directions**
-- Remove directions that are:
-    - extremely vague (e.g., "optimize code a bit"),
-    - pure noise (e.g., strategies about "OS jitter" or "no code change"),
-    - fully redundant with another, better described direction.
-- Aim to keep roughly **5–8** directions that are genuinely useful for guiding future exploration.
-
----
-
-## Part 2: Compress `experience_library` (Experience Library)
-
-Each item in `experience_library` has the schema:
-- `type`: "Success" | "Failure" | "Neutral".
-- `title`: concise name of the experience.
-- `description`: one-sentence summary.
-- `content`: 2–6 bullet points or short paragraphs giving details.
-- `evidence`: list of objects with fields:
-- `solution_id`
-- `code_change`
-- `metrics_delta`
-- `context`
-
-Your tasks:
-
-1. **Merge overlapping experiences**
-- If multiple items describe the same underlying lesson (e.g., multiple entries about "bitwise modulo for power-of-two MOD"),
-    merge them into a single, stronger experience.
-- Choose a clear, general `title`.
-- Rewrite `description` to summarize the key idea in one sentence.
-- Merge and rewrite `content` into 3–7 concise bullet points or short paragraphs:
-    - when it applies,
-    - why it works or fails,
-    - what the main trade-offs or risks are.
-- Merge their evidence lists and keep at most **3** of the most representative items.
-
-2. **Determine `type`**
-- If the lesson clearly results in better performance or correctness when applied properly, mark as "Success".
-- If the lesson is mainly a warning/anti-pattern, mark as "Failure".
-- If the evidence is weak, mixed, or mainly about measurement noise, mark as "Neutral".
-
-3. **Filter out trivial or redundant items**
-- Discard entries that:
-    - only reflect measurement noise with no actionable lesson,
-    - have negligible effect (< 1% change) AND no interesting reasoning content,
-    - are completely subsumed by a merged, more general experience.
-
----
-
-## Global Constraints
-
-- You MUST NOT invent new strategies, evidence, or numbers.
-- You MAY rewrite text (direction, description, content) for clarity and consolidation.
-- You MUST preserve the overall JSON schema, but you can reduce the number of items.
-- Try to keep the final memory compact enough to reasonably fit within ~{token_limit} tokens.
-
----
+   - Remove vague entries (e.g., "optimize code a bit").
+   - Remove noise entries (e.g., "OS jitter", "no code change").
+   - Keep roughly **5–10** useful directions.
 
 ## Output Format
 
-Output a SINGLE JSON object with the following keys:
-
 ```json
-{{
-"thought_process": "Briefly explain how you compressed and merged the memory (max 2 sentences).",
-"direction_board": [
-    {{
-                "direction": "Concise, unique strategy name.",
-    "description": "1–3 sentences explaining what the strategy does and when to apply it.",
-    "status": "Success | Failed | Neutral | Untried",
-    "success_count": 0,
-    "failure_count": 0,
-    "evidence": [
-        {{
-                    "solution_id": "...",
-        "code_change": "...",
-        "metrics_delta": "...",
-        "context": "..."
-        }}
-    ]
-    }}
-],
-"experience_library": [
-    {{
-                "type": "Success | Failure | Neutral",
-    "title": "Concise experience title.",
-    "description": "One-sentence summary of the lesson.",
-    "content": "2–6 bullet points or short paragraphs giving details.",
-    "evidence": [
-        {{
-                    "solution_id": "...",
-        "code_change": "...",
-        "metrics_delta": "...",
-        "context": "..."
-        }}
-    ]
-    }}
-]
-}}
+{
+  "thought_process": "Brief explanation.",
+  "direction_board": [
+    {
+      "direction": "Strategy name",
+      "description": "1–3 sentences explaining the strategy.",
+      "status": "Success | Failed | Neutral",
+      "success_count": int,
+      "failure_count": int
+    }
+  ]
+}
 ```
+"""
+        user_prompt = f"""## Current Direction Board
 
-- If some list is empty, return an empty array ([]) for that list.
-- Return only the JSON object, with no extra commentary or backticks.
-        """
-
-        # 2. User Prompt: 注入当前数据
-        data_to_compress = {
-            "direction_board": memory.get("direction_board", []),
-            "experience_library": memory.get("experience_library", []),
-        }
-
-        current_memory_json = json.dumps(data_to_compress, indent=2)
-
-        user_prompt = f"""
-## Current Reasoning Bank (Uncompressed)
-{current_memory_json}
+{json.dumps(direction_board, indent=2, ensure_ascii=False)}
 
 ## Task
-The current memory is too fragmented and may exceed the token limit.
-Please compress and consolidate the direction_board and experience_library above:
-
-- Merge duplicate or overlapping strategies and experiences.
-- Aggregate their evidence.
-- Recompute status/counts where appropriate.
-- Prune low-value or noisy entries.
-
-Output ONLY the valid JSON object.
-        """
-
+Compress and consolidate the direction_board above. Output ONLY the valid JSON object.
+"""
         return system_prompt, user_prompt
 
-    def _validate_compress_response(self, data: dict[str, Any]) -> None:
-        if not isinstance(data, dict):
-            msg = "响应数据必须为JSON对象"
-            raise ValueError(msg)
-        db = data.get("direction_board")
-        if not isinstance(db, list):
-            msg = "direction_board必须为列表"
-            raise ValueError(msg)
-        for item in db:
-            if not isinstance(item, dict):
-                msg = "direction_board项必须为对象"
-                raise ValueError(msg)
-            for k in ("direction", "description", "status", "success_count", "failure_count", "evidence"):
-                if k not in item:
-                    msg = f"direction_board项缺少键: {k}"
-                    raise ValueError(msg)
-            ev = item.get("evidence")
-            if not isinstance(ev, list):
-                msg = "direction_board.evidence必须为列表"
-                raise ValueError(msg)
-            for e in ev:
-                if not isinstance(e, dict):
-                    msg = "evidence项必须为对象"
-                    raise ValueError(msg)
-        el = data.get("experience_library")
-        if not isinstance(el, list):
-            msg = "experience_library必须为列表"
-            raise ValueError(msg)
-        for item in el:
-            if not isinstance(item, dict):
-                msg = "experience_library项必须为对象"
-                raise ValueError(msg)
-            for k in ("type", "title", "description", "content", "evidence"):
-                if k not in item:
-                    msg = f"experience_library项缺少键: {k}"
-                    raise ValueError(msg)
-            ev = item.get("evidence")
-            if not isinstance(ev, list):
-                msg = "experience_library.evidence必须为列表"
-                raise ValueError(msg)
-            for e in ev:
-                if not isinstance(e, dict):
-                    msg = "evidence项必须为对象"
-                    raise ValueError(msg)
+    def _build_compress_experience_library_prompts(self, experience_library: list[dict[str, Any]]) -> tuple[str, str]:
+        """构建压缩 experience_library 的 prompt。"""
+        system_prompt = """You are compressing the **experience_library** of an evolutionary coding agent.
+
+## Task
+Consolidate and compress the list of learned experiences while preserving actionable insights.
+
+## Rules
+
+1. **Merge overlapping experiences**
+   - If multiple entries describe the same lesson, merge them into one stronger experience.
+
+2. **IMPORTANT: Do NOT merge experiences with DIFFERENT root causes**
+   - "Avoid recursion without memoization (TLE)" and "Avoid large array allocation (OOM)" are DIFFERENT lessons, keep them separate.
+   - "Use iterative DP" and "Use rolling array to save memory" are DIFFERENT techniques, keep them separate.
+
+3. **Content Guidelines by Type**
+
+   **For Success type:**
+   - Title: Describe the successful technique/approach (e.g., "Use rolling array DP for space optimization")
+   - Content: Explain WHY it works and WHAT insight makes it effective
+   - Focus on: What was the key insight? Under what conditions does this work?
+
+   **For Failure type:**
+   - Title: Describe the SPECIFIC mistake, not just the approach (e.g., "BFS without boundary check causes index out of bounds", NOT just "BFS implementation")
+   - Content: Explain WHY it failed and WHAT specific condition triggered the failure
+   - Focus on: What exactly went wrong? What should be checked/avoided?
+
+4. **Filter out trivial items**
+   - Remove entries that only reflect measurement noise.
+   - Remove entries with negligible effect and no actionable lesson.
+   - Keep roughly **5–8** useful experiences.
+
+## Output Format
+
+```json
+{
+  "thought_process": "Brief explanation (1-2 sentences).",
+  "experience_library": [
+    {
+      "type": "Success | Failure | Neutral",
+      "title": "Specific, descriptive title",
+      "description": "One-sentence summary of the insight/lesson.",
+      "content": "2–6 sentences explaining when/why this works or fails."
+    }
+  ]
+}
+```
+"""
+        user_prompt = f"""## Current Experience Library
+
+{json.dumps(experience_library, indent=2, ensure_ascii=False)}
+
+## Task
+Compress and consolidate the experience_library above. Output ONLY the valid JSON object.
+"""
+        return system_prompt, user_prompt
 
     def extract_and_update(
         self,

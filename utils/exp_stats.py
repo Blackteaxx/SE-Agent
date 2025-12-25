@@ -753,6 +753,7 @@ def print_best_iteration_stats(results: list[TaskStats]):
     first_valid_iters: list[int] = []
     tasks_with_best_info = 0
     tasks_never_valid = 0  # 从未达到有效性能的任务
+    never_valid_task_names: list[str] = []  # 从未达到有效性能的任务名称列表
 
     for r in results:
         if r.best_iter_info is None:
@@ -761,6 +762,7 @@ def print_best_iteration_stats(results: list[TaskStats]):
 
         if r.best_iter_info.best_performance == float("inf"):
             tasks_never_valid += 1
+            never_valid_task_names.append(r.task_name)
         else:
             best_iters.append(r.best_iter_info.best_iteration)
             if r.best_iter_info.first_valid_iteration > 0:
@@ -769,6 +771,10 @@ def print_best_iteration_stats(results: list[TaskStats]):
     if not best_iters:
         print("\n🎯 最优迭代次数统计:")
         print("  (无有效数据)")
+        if never_valid_task_names:
+            print(f"  - 从未达到有效性能的任务列表 ({len(never_valid_task_names)} 个):")
+            for task_name in never_valid_task_names:
+                print(f"      • {task_name}")
         return
 
     # 计算统计量
@@ -795,6 +801,10 @@ def print_best_iteration_stats(results: list[TaskStats]):
 
     print("\n🎯 最优迭代次数统计（用于迭代预算选取）:")
     print(f"  - 有效任务数: {n}/{tasks_with_best_info} (从未达到有效性能: {tasks_never_valid})")
+    if never_valid_task_names:
+        print(f"  - 从未达到有效性能的任务列表:")
+        for task_name in never_valid_task_names:
+            print(f"      • {task_name}")
     print(f"  - 平均达到最优的迭代次数: {avg_best:.1f}")
     print(f"  - 中位数: {median_best:.1f}")
     print(f"  - 范围: {min_best} ~ {max_best}")
