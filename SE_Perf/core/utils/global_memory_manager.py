@@ -407,7 +407,7 @@ Your output must strictly follow the JSON format shown below:
     Using the Improvement / Regression steps and the Best Solution above, extract at most 5–7 generalizable experiences.
     Remember to:
     - Focus on strategy-level changes and their metric impact.
-    - Follow the exact JSON schema described in the system prompt and return a single JSON object with key "experiences".
+    - Follow the exact JSON schema described above and return a single JSON object with key "experiences".
     """.strip()
 
         user_prompt = "\n\n".join(sections + [guide])

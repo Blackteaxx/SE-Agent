@@ -141,7 +141,7 @@ prompts:
 
   optimization_template: |
     # Task
-    Analyze the following program information. Following all instructions in your system prompt, generate your `## Thinking` and `## Diffs` response to improve the program's PERFORMANCE.
+    Analyze the following program information and generate your `## Thinking` and `## Diffs` response to improve the program's PERFORMANCE based on the instructions above.
 
     # Current Program Information 
 
