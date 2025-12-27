@@ -202,15 +202,30 @@ class LLMClient:
 
                 # 使用基本的OpenAI客户端调用，遵循api_test.py的工作模式
                 # 不使用额外参数，避免服务器错误
-                # 禁止思考，仅返回直接回答
+                model_to_use = "/".join(self.config["name"].split("/")[1:])
+                self.logger.debug(f"调用模型: {model_to_use}, max_tokens={max_tokens}")
+
                 response = self.client.chat.completions.create(
-                    model="/".join(self.config["name"].split("/")[1:]),
+                    model=model_to_use,
                     messages=messages,
                     temperature=temperature,
-                    extra_body={
-                        "chat_template_kwargs": {"enable_thinking": False},
-                    },
+                    max_tokens=max_tokens,
                 )
+
+                # 检查响应是否有效 - 空 choices 视为可重试错误
+                if not response.choices:
+                    self.logger.warning(
+                        f"API返回空choices (尝试 {attempt + 1}/{self.max_retries}), Response: {response}"
+                    )
+                    # 空响应时进行重试
+                    attempt += 1  # 递增重试计数
+                    if attempt < self.max_retries:
+                        time.sleep(self.retry_delay * attempt)
+                        continue
+                    else:
+                        raise ValueError(
+                            f"API返回空choices，已重试{self.max_retries}次。Response id: {response.id}, model: {response.model}"
+                        )
 
                 # 提取响应内容
                 content = response.choices[0].message.content

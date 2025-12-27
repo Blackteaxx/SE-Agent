@@ -258,6 +258,7 @@ def extract_best_solutions(
     verbose: bool = True,
     report_file: Path | None = None,
     solution_file: Path | None = None,
+    lang: str = "python3",
 ) -> dict[str, str]:
     """
     从实验目录中提取所有已完成任务的最佳解决方案。
@@ -269,6 +270,7 @@ def extract_best_solutions(
         verbose: 是否打印详细信息
         report_file: 报告文件路径，用于 fallback 检查（可选）
         solution_file: 解决方案文件路径，用于 fallback 提取（可选）
+        lang: 编程语言（默认 python3）
 
     Returns:
         任务名到最佳代码的映射
@@ -324,7 +326,7 @@ def extract_best_solutions(
 
         if best_solution is None:
             # 尝试 fallback
-            fallback_code = get_fallback_solution(task_name, report_data, solution_data)
+            fallback_code = get_fallback_solution(task_name, report_data, solution_data, lang)
             if fallback_code:
                 stats["extracted"] += 1
                 stats["fallback_used"] += 1
@@ -407,6 +409,12 @@ def main():
         default=None,
         help="预生成解决方案文件路径（用于 fallback 提取，如 data/deepseek-chat-v3-0324-sol.json）",
     )
+    parser.add_argument(
+        "--lang",
+        type=str,
+        default="python3",
+        help="编程语言（默认 python3，可选 cpp）",
+    )
 
     args = parser.parse_args()
 
@@ -422,6 +430,7 @@ def main():
         verbose=not args.quiet,
         report_file=report_file,
         solution_file=solution_file,
+        lang=args.lang,
     )
 
     if not results:

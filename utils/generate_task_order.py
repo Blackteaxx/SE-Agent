@@ -3,7 +3,7 @@ import argparse
 from pathlib import Path
 
 
-def generate_order(json_path: str, output_path: str):
+def generate_order(json_path: str, output_path: str, lang: str):
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -15,15 +15,12 @@ def generate_order(json_path: str, output_path: str):
     failed_tasks = []
 
     for task_name, lang_data in per_task.items():
-        # Assume one language per task or take the first one
         if not lang_data:
             failed_tasks.append(task_name)
             continue
 
-        # Get the first language dict (e.g., "python3")
-        lang_key = list(lang_data.keys())[0]
-        scores = lang_data[lang_key]
-
+        # 获取指定语言的分数
+        scores = lang_data.get(lang, {})
         integral_score = scores.get("integral_score", 0.0)
 
         if integral_score > 0:
@@ -46,6 +43,7 @@ def generate_order(json_path: str, output_path: str):
             f.write(f"{task}\n")
 
     print(f"Generated order file at {output_path}")
+    print(f"Language: {lang}")
     print(f"Passed tasks: {len(passed_tasks)}")
     print(f"Failed tasks: {len(failed_tasks)}")
     print(f"Total tasks: {len(final_order)}")
@@ -54,7 +52,14 @@ def generate_order(json_path: str, output_path: str):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate task order from report JSON")
     parser.add_argument("json_path", help="Path to the report JSON file")
-    parser.add_argument("output_path", help="Path to the output order file")
+    parser.add_argument("--lang", required=True, help="Language to filter by (e.g., python3, cpp)")
+    parser.add_argument("--output", "-o", help="Path to the output order file (default: auto-generated)")
 
     args = parser.parse_args()
-    generate_order(args.json_path, args.output_path)
+    # 自动生成输出路径：在输入文件名后加上语言后缀
+    if args.output:
+        output_path = args.output
+    else:
+        json_path = Path(args.json_path)
+        output_path = json_path.parent / f"{json_path.stem}_{args.lang}_order.txt"
+    generate_order(args.json_path, str(output_path), args.lang)
