@@ -329,7 +329,7 @@ class TrajectorySummarizer:
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     temperature=0.7,
-                    max_tokens=10000,
+                    max_tokens=None,  # 使用配置中的 max_output_tokens
                     usage_context="traj_summarizer",
                 )
                 self.logger.debug(f"LLM原始响应 (迭代{iteration}, 第{attempt}次):\n{response}")

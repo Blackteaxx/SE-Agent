@@ -453,7 +453,7 @@ Your output must strictly follow the JSON format shown below:
                         system_prompt=system_prompt,
                         user_prompt=user_prompt,
                         temperature=0.7,
-                        max_tokens=20000,
+                        max_tokens=None,  # 使用配置中的 max_output_tokens
                         usage_context="global_memory.extract",
                     )
                     self.logger.debug(f"LLM原始响应 (提取全局经验，第{attempt}次):\n{resp_text}")
@@ -549,7 +549,7 @@ Your output must strictly follow the JSON format shown below:
                             system_prompt=system_prompt,
                             user_prompt=user_prompt,
                             temperature=0.7,
-                            max_tokens=20000,
+                            max_tokens=None,  # 使用配置中的 max_output_tokens
                             usage_context="global_memory.generate_query",
                         )
                         self.logger.debug(f"LLM原始响应 (生成 query，第{attempt}次):\n{resp_text}")
@@ -726,7 +726,7 @@ Output Schema (STRICT JSON):
                         system_prompt=system_prompt,
                         user_prompt=user_prompt,
                         temperature=0.7,
-                        max_tokens=20000,
+                        max_tokens=None,  # 使用配置中的 max_output_tokens
                         usage_context="global_memory.relevance_select",
                     )
                     self.logger.debug(f"LLM原始响应 (筛选全局经验，第{attempt}次):\n{resp_text}")

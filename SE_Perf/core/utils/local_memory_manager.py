@@ -995,7 +995,7 @@ The optimization target is **integral**:
                     system_prompt=sys_prompt,
                     user_prompt=user_prompt,
                     temperature=0.7,
-                    max_tokens=10000,
+                    max_tokens=None,  # 使用配置中的 max_output_tokens
                     usage_context="memory.compress_directions",
                 )
                 self.logger.debug(f"LLM原始响应 (压缩directions，第{attempt}次):\n{llm_response}")
@@ -1032,7 +1032,7 @@ The optimization target is **integral**:
                     system_prompt=sys_prompt,
                     user_prompt=user_prompt,
                     temperature=0.7,
-                    max_tokens=5000,
+                    max_tokens=None,  # 使用配置中的 max_output_tokens
                     usage_context="memory.compress_experiences",
                 )
                 self.logger.debug(f"LLM原始响应 (压缩experiences，第{attempt}次):\n{llm_response}")
@@ -1258,7 +1258,7 @@ Compress and consolidate the experience_library above. Output ONLY the valid JSO
                             system_prompt=sys_prompt,
                             user_prompt=user_prompt,
                             temperature=0.7,
-                            max_tokens=20000,
+                            max_tokens=None,  # 使用配置中的 max_output_tokens
                             usage_context="local_memory.extract_and_update",
                         )
                         self.logger.debug(f"LLM原始响应 (第{attempt}次):\n{llm_response}")
